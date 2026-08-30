@@ -3,26 +3,26 @@ members = ["crates/bevy-aqua-fft", "crates/bevy-aqua-sdf", "crates/bevy-aqua-geo
 resolver = "2"
 
 [workspace.package]
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sayhisam1/bevy-aqua"
 
 [workspace.dependencies]
-bevy-aqua-core = { path = "crates/bevy-aqua-core", version = "0.1.2" }
-bevy-aqua-fft = { path = "crates/bevy-aqua-fft", version = "0.1.2" }
-bevy-aqua-foam = { path = "crates/bevy-aqua-foam", version = "0.1.2" }
-bevy-aqua-geom = { path = "crates/bevy-aqua-geom", version = "0.1.2" }
-bevy-aqua-light = { path = "crates/bevy-aqua-light", version = "0.1.2" }
-bevy-aqua-optics = { path = "crates/bevy-aqua-optics", version = "0.1.2" }
-bevy-aqua-motion = { path = "crates/bevy-aqua-motion", version = "0.1.2" }
-bevy-aqua-query = { path = "crates/bevy-aqua-query", version = "0.1.2" }
-bevy-aqua-reflect = { path = "crates/bevy-aqua-reflect", version = "0.1.2" }
-bevy-aqua-sdf = { path = "crates/bevy-aqua-sdf", version = "0.1.2" }
-bevy-aqua-spray = { path = "crates/bevy-aqua-spray", version = "0.1.2" }
-bevy-aqua-shore = { path = "crates/bevy-aqua-shore", version = "0.1.2" }
-bevy-aqua-waves = { path = "crates/bevy-aqua-waves", version = "0.1.2" }
+bevy-aqua-core = { path = "crates/bevy-aqua-core", version = "0.2.0" }
+bevy-aqua-fft = { path = "crates/bevy-aqua-fft", version = "0.2.0" }
+bevy-aqua-foam = { path = "crates/bevy-aqua-foam", version = "0.2.0" }
+bevy-aqua-geom = { path = "crates/bevy-aqua-geom", version = "0.2.0" }
+bevy-aqua-light = { path = "crates/bevy-aqua-light", version = "0.2.0" }
+bevy-aqua-optics = { path = "crates/bevy-aqua-optics", version = "0.2.0" }
+bevy-aqua-motion = { path = "crates/bevy-aqua-motion", version = "0.2.0" }
+bevy-aqua-query = { path = "crates/bevy-aqua-query", version = "0.2.0" }
+bevy-aqua-reflect = { path = "crates/bevy-aqua-reflect", version = "0.2.0" }
+bevy-aqua-sdf = { path = "crates/bevy-aqua-sdf", version = "0.2.0" }
+bevy-aqua-spray = { path = "crates/bevy-aqua-spray", version = "0.2.0" }
+bevy-aqua-shore = { path = "crates/bevy-aqua-shore", version = "0.2.0" }
+bevy-aqua-waves = { path = "crates/bevy-aqua-waves", version = "0.2.0" }
 bevy = { version = "0.19", default-features = false }
 bevy_ecs = "0.19"
 bevy_hanabi = { version = "0.19.0", default-features = false, features = ["3d"] }

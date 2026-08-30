@@ -34,7 +34,8 @@ bodies, and GPU surface queries.
 
 | bevy-aqua | Bevy | Rust | Verified target |
 |---|---|---|---|
-| 0.1 | 0.19 | 1.95+ | Desktop Vulkan and browser WebGPU (Wasm) |
+| 0.2 | 0.19 | 1.95+ | Desktop Vulkan and browser WebGPU (Wasm) |
+| 0.1 | 0.19 | 1.95+ | Desktop Vulkan |
 
 Browser WebGPU/Wasm support was contributed by
 [@wellscrosby](https://github.com/wellscrosby) in [#1](https://github.com/sayhisam1/bevy-aqua/pull/1).
