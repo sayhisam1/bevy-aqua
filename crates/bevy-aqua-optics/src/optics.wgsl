@@ -250,7 +250,12 @@ fn camera_depth_debug_from_path(
     result.has_background = path.has_background;
 #ifdef DEPTH_PREPASS
     let shallow_gap = min(1.0, 0.5 * path.path_length);
-    let refract_offset = surface.debug.y * normal.xz
+    // Project the horizontal normal perturbation through this camera. Using
+    // world XZ as UV axes makes distortion rotate incorrectly with camera yaw
+    // and roll. The mean plane contributes no perturbation.
+    let clip_perturbation = view.clip_from_world * vec4(normal.x, 0.0, normal.z, 0.0);
+    let screen_perturbation = 0.5 * vec2(clip_perturbation.x, -clip_perturbation.y);
+    let refract_offset = surface.debug.y * screen_perturbation
         * shallow_gap / max(path.scene_z, LUMINANCE_EPSILON);
     result.refracted_uv = clamp(path.screen_uv + refract_offset, vec2(0.0), vec2(1.0));
     let refracted_pixel = result.refracted_uv * (view.viewport.zw - vec2(1.0))
