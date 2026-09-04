@@ -78,3 +78,6 @@ mod far_scatter_tests {
         assert!((reference(0.0) - 0.057).abs() < 1e-6);
     }
 }
+
+#[cfg(test)]
+mod far_opacity_tests;

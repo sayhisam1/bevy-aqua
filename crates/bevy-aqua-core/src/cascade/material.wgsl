@@ -29,7 +29,7 @@
 #import bevy_aqua_core::deform::{deform_current}
 #import bevy_aqua_core::material::{BodyLightingState, CameraDepthDebug, CameraDepthPath, FoamState, LocalLightingState, MediumState, NearSurface, PrimaryLightState, SurfaceVertexOutput, TransmissionState}
 #import aqua::light::incident::{GODOT_NORMAL_FADE_RATE, GODOT_NORMAL_MINIMUM_STRENGTH, GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, local_light_contribution, resolve_primary_light, safe_normalize, sample_diffuse_environment, sample_environment, sample_local_light, smith_masking_shadowing, strongest_incident_directional_light, view_direction}
-#import aqua::optics::{camera_depth_path, deep_water_weight, empty_camera_depth_path, far_field_water, resolve_near_surface, resolve_transmission, sample_water_medium, unresolved_wave_roughness}
+#import aqua::optics::{camera_depth_path, deep_water_weight, empty_camera_depth_path, far_field_water, far_path_opaque, resolve_near_surface, resolve_transmission, sample_water_medium, unresolved_wave_roughness}
 
 @vertex
 fn vertex(vertex: Vertex) -> SurfaceVertexOutput {
@@ -53,16 +53,20 @@ fn prepare_surface_foam(
     surface_lod: u32,
     foam_density: f32,
     lighting_distance: f32,
+    cached_depth_path: CameraDepthPath,
+    has_cached_depth_path: bool,
 ) -> FoamState {
     let foam_distance_fade = exp(-lighting_distance * 0.0075);
     let visible_foam_density = foam_density * foam_distance_fade;
     var white_foam_density = visible_foam_density;
     var white_foam = 0.0;
-    var shared_depth_path = empty_camera_depth_path();
-    var has_shared_depth_path = false;
+    var shared_depth_path = cached_depth_path;
+    var has_shared_depth_path = has_cached_depth_path;
     if visible_foam_density > 0.0 {
-        shared_depth_path = camera_depth_path(in);
-        has_shared_depth_path = true;
+        if !has_shared_depth_path {
+            shared_depth_path = camera_depth_path(in);
+            has_shared_depth_path = true;
+        }
         let foam_depth = shared_depth_path;
         let shoreline_fade = select(
             1.0,
@@ -579,6 +583,20 @@ fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
         far_water_depth = blended_water_depth(in.world_position.xz);
         far_tier *= deep_water_weight(far_water_depth);
     }
+    var shared_depth_path = empty_camera_depth_path();
+    var has_shared_depth_path = false;
+    // Resolve at the candidate tier. An opacity-dependent continuous change
+    // would change the normal and invalidate the accepted refracted sample.
+    var near = resolve_near_surface(in, surface_lod, geometric_normal, far_tier, mode);
+    if far_tier > 0.0 {
+        shared_depth_path = camera_depth_path(in);
+        has_shared_depth_path = true;
+        if !far_path_opaque(in, near.normal, shared_depth_path) {
+            far_tier = 0.0;
+            // Restore the exact near path, including its detail normal.
+            near = resolve_near_surface(in, surface_lod, geometric_normal, far_tier, mode);
+        }
+    }
     if far_tier > 0.0 {
         far_water = far_field_water(
             in.world_position,
@@ -589,13 +607,12 @@ fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
             far_water_depth,
         );
         if far_tier >= 1.0 {
-            // Fully far beauty skips detail, clusters, shadows, foam, sampled
-            // SSS, local lights, and every transmission/camera-depth read.
+            // Opaque far beauty skips clusters, shadows, foam, sampled SSS,
+            // local lights and transmission colour, but verifies camera depth.
             return vec4(far_water, 1.0);
         }
     }
 
-    let near = resolve_near_surface(in, surface_lod, geometric_normal, far_tier, mode);
     let primary = resolve_primary_light(in, near.normal);
     let medium = sample_water_medium(in, surface_lod, near.lighting_normal, to_view, mode);
     if mode == DEBUG_MODE_SEA_FLOOR {
@@ -622,6 +639,8 @@ fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
         surface_lod,
         medium.foam_density,
         near.lighting_distance,
+        shared_depth_path,
+        has_shared_depth_path,
     );
     let scatter = directional_scatter(
         in,

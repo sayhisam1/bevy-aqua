@@ -411,6 +411,12 @@ fn illuminate_bed(
     );
 }
 
+// Beauty-only attenuation. Diagnostics intentionally retain authored extinction.
+fn beauty_extinction(water_depth: f32) -> vec3<f32> {
+    let scale = mix(vec3(0.52, 0.42, 0.62), vec3(1.0), deep_water_weight(water_depth));
+    return invocation_extinction() * scale;
+}
+
 // Beauty skips color sampling when there is no usable background or the accepted
 // water path is opaque. Diagnostics deliberately bypass these shortcuts.
 fn beauty_transmission(
@@ -433,9 +439,7 @@ fn beauty_transmission(
         use_refraction,
     );
     // Reduce extinction in the first few metres so the seabed stays visible.
-    let deep_weight = smoothstep(0.35, surface.shallow_color.a, medium.water_depth);
-    let shallow_extinction_scale = mix(vec3(0.52, 0.42, 0.62), vec3(1.0), deep_weight);
-    let extinction = invocation_extinction() * shallow_extinction_scale;
+    let extinction = beauty_extinction(medium.water_depth);
     let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));
     // Refraction can reveal a shallower bed: test the accepted path, not the original.
     if !(minimum_extinction * water_path < TRANSMISSION_OPAQUE_OPTICAL_DEPTH) {
@@ -451,6 +455,29 @@ fn beauty_transmission(
     let lit_scene = illuminate_bed(scene_colour, in, medium, primary);
     let alpha = 1.0 - exp(-extinction * water_path);
     return mix(lit_scene, scatter_colour, alpha);
+}
+
+// Admission uses the same path selection and attenuation as near beauty.
+// False means keep near transmission; true also covers no transmissive
+// background under the existing contract (not proof of physical opacity).
+fn far_path_opaque(
+    in: SurfaceVertexOutput,
+    normal: vec3<f32>,
+    path: CameraDepthPath,
+) -> bool {
+    if !path.has_background || path.path_length <= LUMINANCE_EPSILON {
+        return true;
+    }
+    let accepted = camera_depth_debug_from_path(in, normal, path);
+    let water_path = select(
+        accepted.path_length,
+        accepted.refracted_path_length,
+        accepted.refracted_sample_valid,
+    );
+    let depth = blended_water_depth(in.undisplaced_xz);
+    let extinction = beauty_extinction(depth);
+    let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));
+    return minimum_extinction * water_path >= TRANSMISSION_OPAQUE_OPTICAL_DEPTH;
 }
 
 fn resolve_transmission(
