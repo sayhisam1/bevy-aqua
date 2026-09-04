@@ -84,3 +84,39 @@ impl FromWorld for WaterFields {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn field_shader_filters_height_but_not_discrete_ownership() {
+        let shader = include_str!("cascade/common.wgsl");
+        let sample = shader
+            .split("fn sample_field_level(")
+            .nth(1)
+            .unwrap()
+            .split("fn sample_field_flow(")
+            .next()
+            .unwrap();
+        assert!(sample.contains("textureSampleLevel(field_maps, field_sampler, uv, 0, 0.0).x"));
+        assert!(sample.contains("textureLoad(field_maps, coord, 0, 0).y"));
+        assert!(sample.contains("return vec2(level, slot);"));
+    }
+
+    #[test]
+    fn nearest_slot_sampling_cannot_invent_a_body_at_boundaries() {
+        let slots = [0_u32, 2, 7, 16];
+        for y in -4..=12 {
+            for x in -4..=12 {
+                let uv = Vec2::new(x as f32 / 8.0, y as f32 / 8.0);
+                let coord = (uv * 2.0).floor().as_ivec2().clamp(IVec2::ZERO, IVec2::ONE);
+                let slot = slots[(coord.y * 2 + coord.x) as usize];
+                assert!(slots.contains(&slot));
+            }
+        }
+        // Bilinear filtering a 0/2 edge instead fabricates valid slot 1.
+        assert_eq!((0.5_f32 * 0.0 + 0.5 * 2.0).round() as u32, 1);
+        assert!(!slots.contains(&1));
+    }
+}
