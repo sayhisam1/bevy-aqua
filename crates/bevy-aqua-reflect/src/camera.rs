@@ -58,6 +58,7 @@ struct Scene<'w, 's> {
             &'static GlobalTransform,
             Option<&'static Exposure>,
             Option<&'static AtmosphereSettings>,
+            Option<&'static EnvironmentMapLight>,
         ),
         (With<OceanView>, Without<AuxiliaryWaterView>),
     >,
@@ -150,7 +151,7 @@ fn sync_mirrors(
         }
         return;
     };
-    let Ok((camera, projection, camera_transform, exposure, atmosphere)) =
+    let Ok((camera, projection, camera_transform, exposure, atmosphere, environment)) =
         scene.main_camera.single()
     else {
         material.reflections.view_count = 0;
@@ -208,6 +209,13 @@ fn sync_mirrors(
             *camera_global_transform = GlobalTransform::from(transform);
             *camera_projection = Projection::Perspective(mirror_projection);
             *mirror_exposure = exposure.cloned().unwrap_or_default();
+        }
+        // The main environment lights reflected geometry too. Coverage export
+        // still rejects the mirror sky; this does not double-light the water.
+        if let Some(environment) = environment {
+            commands.entity(slot.entity).insert(environment.clone());
+        } else {
+            commands.entity(slot.entity).remove::<EnvironmentMapLight>();
         }
         if let Some(atmosphere) = atmosphere {
             commands.entity(slot.entity).insert(atmosphere.clone());
