@@ -8,7 +8,7 @@
     mesh_view_bindings::{globals, lights, view},
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
-#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, invocation_extinction, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, surface}
+#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, invocation_extinction, invocation_scatter_scale, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, surface}
 #import aqua::waves::displace::{WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, detail_normal_sample}
 #import aqua::foam::shade::{sample_foam_density}
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
@@ -130,7 +130,10 @@ fn far_field_water(
     // near path's bed-depth color classification while omitting transmission.
     let body_albedo = depth_aware_body_albedo(water_depth, deep_body_albedo);
     let diffuse_irradiance = sample_diffuse_environment(vec3(0.0, 1.0, 0.0));
-    var body = diffuse_irradiance * (body_albedo + GODOT_WATER_ALBEDO);
+    // Match the near lane: the per-body scale applies to volume scatter,
+    // not the Godot substrate diffuse term or surface reflections.
+    let scatter_scale = invocation_scatter_scale();
+    var body = diffuse_irradiance * (body_albedo * scatter_scale + GODOT_WATER_ALBEDO);
 
     let perceptual_roughness = max(surface.reflection.w, 0.05);
     let reflection = reflect(-to_view, lighting_normal);
@@ -168,7 +171,7 @@ fn far_field_water(
             );
         body += (sss_height + sss_near)
             * GODOT_SSS_MODIFIER / (1.0 + sss_light_mask)
-            * light_radiance * GODOT_WATER_ALBEDO;
+            * light_radiance * GODOT_WATER_ALBEDO * scatter_scale;
         let sun_roughness = min(sqrt(
             invocation_sun_roughness() * invocation_sun_roughness()
                 + perceptual_roughness * perceptual_roughness,
