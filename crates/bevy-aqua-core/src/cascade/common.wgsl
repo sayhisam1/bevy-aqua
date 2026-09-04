@@ -378,7 +378,19 @@ fn field_uv(world_xz: vec2<f32>) -> vec2<f32> {
 
 /// rg: surface level, one-based body slot (0 = unclaimed).
 fn sample_field_level(world_xz: vec2<f32>) -> vec2<f32> {
-    return textureSampleLevel(field_maps, field_sampler, field_uv(world_xz), 0, 0.0).xy;
+    let uv = field_uv(world_xz);
+    let level = textureSampleLevel(field_maps, field_sampler, uv, 0, 0.0).x;
+    // Slot IDs are categorical: interpolating slots 0 and 2 invents body 1.
+    // Keep continuous levels filtered, but select ownership at the nearest
+    // texel centre. Clamp explicitly to match the field sampler at map edges.
+    let dimensions = vec2<i32>(textureDimensions(field_maps, 0));
+    let coord = clamp(
+        vec2<i32>(floor(uv * vec2<f32>(dimensions))),
+        vec2(0),
+        dimensions - vec2(1),
+    );
+    let slot = textureLoad(field_maps, coord, 0, 0).y;
+    return vec2(level, slot);
 }
 
 /// rgb: flow m/s; z: signed bank margin in metres; w: speed m/s.
