@@ -183,6 +183,11 @@ fn sample_planar_reflection(
         index = 1u;
     }
     let view = planar_reflections.views[index];
+    // Match CPU level deduplication: another water elevation is not a
+    // valid approximation. Unrepresented bodies keep the environment.
+    if abs(surface_level - view.level) > 0.01 {
+        return PlanarReflectionSample(vec3(0.0), 0.0);
+    }
     let clip = view.view_projection * vec4(world_position, 1.0);
     if clip.w <= 0.0 {
         return PlanarReflectionSample(vec3(0.0), 0.0);
