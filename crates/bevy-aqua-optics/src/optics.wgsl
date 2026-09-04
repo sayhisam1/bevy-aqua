@@ -163,12 +163,6 @@ fn far_field_water(
         body += (sss_height + sss_near)
             * GODOT_SSS_MODIFIER / (1.0 + sss_light_mask)
             * light_radiance * GODOT_WATER_ALBEDO;
-        let light_luminance = max(
-            dot(filtered_light_color, LUMINANCE_WEIGHTS),
-            LUMINANCE_EPSILON,
-        );
-        let light_color = filtered_light_color / light_luminance;
-        let light_strength = clamp(light_luminance / surface.reflection.z, 0.0, 1.0);
         let sun_roughness = min(sqrt(
             surface.sun.y * surface.sun.y
                 + perceptual_roughness * perceptual_roughness,
@@ -185,10 +179,8 @@ fn far_field_water(
         let geometric_attenuation = 1.0 / (1.0 + light_mask + view_mask_sun);
         let sun_specular = distribution
             * geometric_attenuation / (4.0 * dot_nv_sun + 0.1);
-        reflected_radiance += sun_specular
-            * surface.sun.x
-            * light_color
-            * light_strength;
+        // Far and near direct specular share the exposed radiance domain.
+        reflected_radiance += sun_specular * surface.sun.x * light_radiance;
     }
 
     let view_alignment = clamp(dot(lighting_normal, to_view), 0.0, 1.0);

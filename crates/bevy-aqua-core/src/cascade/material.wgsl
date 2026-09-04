@@ -293,12 +293,6 @@ fn shade_environment_and_sun(
             light.direction_to_light,
             vec3(0.0, 1.0, 0.0),
         );
-        let light_luminance = max(
-            dot(primary.color, LUMINANCE_WEIGHTS),
-            LUMINANCE_EPSILON,
-        );
-        let light_color = primary.color / light_luminance;
-        let light_strength = clamp(light_luminance / surface.reflection.z, 0.0, 1.0);
         let halfway = safe_normalize(
             light_direction + to_view,
             near.lighting_normal,
@@ -314,11 +308,9 @@ fn shade_environment_and_sun(
         let geometric_attenuation = 1.0 / (1.0 + light_mask + view_mask);
         let sun_specular = distribution
             * geometric_attenuation / (4.0 * dot_nv + 0.1);
-        reflected_radiance += sun_specular
-            * surface.sun.x
-            * light_color
-            * light_strength
-            * primary.shadow;
+        // Use the same exposed, shadowed radiance as diffuse/SSS and local
+        // emitters. Normalizing/clamping lux would make glints ignore exposure.
+        reflected_radiance += sun_specular * surface.sun.x * primary.radiance;
     }
     return reflected_radiance;
 }
