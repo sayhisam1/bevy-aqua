@@ -115,6 +115,7 @@ struct SurfaceParams {
     far_tier: vec4<f32>,
     /// Strength, metres per cell, metres per second, and maximum depth in metres.
     caustics: vec4<f32>,
+    wave_slope_variance: array<vec4<f32>, 2>,
 }
 
 /// Localized-water extent controls; mirrors lod::BodyParams. flags.x is 1.0

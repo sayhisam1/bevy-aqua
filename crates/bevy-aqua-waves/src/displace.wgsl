@@ -21,16 +21,6 @@ const CAPILLARY_ROTATION: mat2x2<f32> = mat2x2(
 const WAVE_NORMALS_SLOPE_VARIANCE: f32 = 0.05602466;
 const NORMAL_SCROLL_MULTIPLIER: f32 = 1.875;
 const NORMAL_SCROLL_POWER: f32 = 1.4;
-// Deterministic mean-square slope per owned wavelength octave. FFT values are
-// phase means 2 * sum(k^2 * |h0(k)|^2) for the shipped H0 realization; Gerstner values are
-// sums of 0.5 * (amplitude * wave_number)^2 for the shipped components.
-const FFT_JONSWAP_SLOPE_VARIANCE: array<f32, 5> = array(
-    0.06393624, 0.06369724, 0.06306524, 0.06170338, 0.06048288,
-);
-const GERSTNER_SLOPE_VARIANCE: array<f32, 5> = array(
-    0.0194041, 0.027484603, 0.015417861, 0.0066486476, 0.010458008,
-);
-
 fn direct_displacement(world_xz: vec2<f32>, lod: u32) -> vec3<f32> {
     let sampled_xz = advected_world(world_xz);
     let cascade = cascade_layout.cascades[lod];
