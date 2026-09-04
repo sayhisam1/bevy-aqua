@@ -171,6 +171,7 @@ fn sample_planar_reflection(
     world_position: vec3<f32>,
     surface_level: f32,
     surface_normal: vec3<f32>,
+    roughness: f32,
 ) -> PlanarReflectionSample {
     if planar_reflections.view_count == 0u {
         return PlanarReflectionSample(vec3(0.0), 0.0);
@@ -212,19 +213,17 @@ fn sample_planar_reflection(
         + vec2(surface_normal.x, -surface_normal.z)
             * planar_reflections.distortion * distortion_guard;
     uv = clamp(uv, half_texel, vec2(1.0) - half_texel);
-    var sample = textureSampleLevel(
-        reflection_a,
-        reflection_sampler,
-        uv,
-        0.0,
-    );
+    // Approximate screen-space box footprint, NOT GGX convolution. Squared
+    // perceptual roughness controls a radius of up to 2.5% of target height.
+    // LOD selects prefiltered dense averages; no widely separated sparse taps.
+    let r = clamp(roughness, 0.0, 1.0);
+    let footprint = max(1.0, 2.0 * r * r * 0.025 * dimensions.y);
+    var level_count = textureNumLevels(reflection_a);
+    if index == 1u { level_count = textureNumLevels(reflection_b); }
+    let lod = clamp(log2(footprint), 0.0, f32(level_count - 1u));
+    var sample = textureSampleLevel(reflection_a, reflection_sampler, uv, lod);
     if index == 1u {
-        sample = textureSampleLevel(
-            reflection_b,
-            reflection_sampler,
-            uv,
-            0.0,
-        );
+        sample = textureSampleLevel(reflection_b, reflection_sampler, uv, lod);
     }
     // Exported alpha is depth-derived coverage, never deferred HDR alpha.
     // Unpremultiply once after filtering so silhouette edges retain their color.
