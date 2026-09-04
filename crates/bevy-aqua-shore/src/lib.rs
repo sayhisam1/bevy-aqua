@@ -190,3 +190,6 @@ fn decorate_bodies(mut commands: Commands, bodies: Query<Entity, Added<WaterBody
 #[cfg(test)]
 #[path = "body_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod caustic_refraction_tests;
