@@ -113,10 +113,9 @@ pub struct WaterOptics {
     /// Multiplier on the volume-scatter endpoint. Small values keep the
     /// deep-pool colour dark instead of ocean turquoise.
     pub scatter_scale: f32,
-    /// Surface roughness driving the Fresnel response; negative inherits
-    /// the ocean value. Calm fresh water wants ~0.1 so grazing angles
-    /// reflect the sky at near-Schlick strength instead of the damped
-    /// ocean ceiling (~16% at 0.4).
+    /// Direct-light lobe roughness; negative inherits the ocean value.
+    /// Calm fresh water typically uses ~0.1 for sharper glints. Fresnel
+    /// always uses the same dielectric response for every reflection source.
     pub sun_roughness: f32,
     /// Deep-water body colour.
     pub deep_color: Vec3,

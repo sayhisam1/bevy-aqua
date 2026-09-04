@@ -483,33 +483,20 @@ fn capillary_resolved_weight(world_xz: vec2<f32>) -> f32 {
     );
 }
 
-// GodotOceanWaves `water.gdshader`: bounded GGX distribution and its Smith
-// masking-shadowing approximation. Aqua applies Fresnel later in Crest's
-// reflection composition, so this returns the remaining direct-sun factor.
-fn godot_fresnel(view_alignment: f32) -> f32 {
-    // Cubemap-only oceans preserve the accepted roughness-damped Godot curve.
-    // Planar mode uses physical dielectric Schlick: roughness broadens the
-    // reflected lobe but must not cap grazing-angle energy, or a bright sky
-    // leaves distant water saturated navy. Calm authored bodies use the same
-    // plain response in either reflection mode.
+// Authored roughness controls the direct-light lobe, never the amount of
+// energy at grazing incidence. Negative per-body values inherit the ocean.
+fn invocation_sun_roughness() -> f32 {
     let body_active = invocation_bounded > 0.5 && invocation_optics_a.w > 0.5;
-    let sun_roughness = select(
+    return clamp(select(
         surface.sun.y,
         invocation_optics_b.y,
         body_active && invocation_optics_b.y >= 0.0,
-    );
-    let plain_schlick = planar_reflections.view_count > 0u
-        || (body_active && invocation_optics_b.z > 0.5);
-    let exponent = select(
-        surface.fresnel.y * exp(-2.69 * sun_roughness),
-        surface.fresnel.y,
-        plain_schlick,
-    );
-    let damping = select(
-        1.0 + 22.7 * pow(sun_roughness, 1.5),
-        1.0,
-        plain_schlick,
-    );
-    let rough = pow(max(0.0, 1.0 - view_alignment), exponent) / damping;
-    return mix(rough, 1.0, surface.fresnel.x);
+    ), 0.001, 1.0);
+}
+
+// Dielectric Schlick is independent of the available reflection source.
+// Keep the historical function name for the shared shader import contract.
+fn godot_fresnel(view_alignment: f32) -> f32 {
+    let grazing = pow(clamp(1.0 - view_alignment, 0.0, 1.0), surface.fresnel.y);
+    return mix(grazing, 1.0, surface.fresnel.x);
 }
