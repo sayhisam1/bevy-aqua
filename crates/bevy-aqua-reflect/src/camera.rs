@@ -86,7 +86,8 @@ pub(super) fn add(app: &mut App) {
             PostUpdate,
             (
                 include_marked,
-                sync_mirrors
+                (reset_mirror_activity, sync_mirrors)
+                    .chain()
                     .after(CascadeMaterialsUpdated)
                     .after(TransformSystems::Propagate)
                     .after(bevy_aqua_core::WaterBodiesResolved)
@@ -131,6 +132,14 @@ fn include_directional_lights(
     }
 }
 
+// Run before synchronization, including when its material/view prerequisites
+// are missing. Only fully validated synchronization can reactivate a mirror.
+fn reset_mirror_activity(mut cameras: Query<&mut Camera, With<MirrorCamera>>) {
+    for mut camera in &mut cameras {
+        camera.is_active = false;
+    }
+}
+
 fn sync_mirrors(
     mut commands: Commands,
     settings: Res<AquaSettings>,
@@ -142,13 +151,8 @@ fn sync_mirrors(
     let Some(mut material) = materials.get_mut(&data.material()) else {
         return;
     };
+    material.reflections.view_count = 0;
     let ReflectionMode::Planar { scale, distortion } = settings.reflections else {
-        material.reflections.view_count = 0;
-        for slot in &scene.mirrors.slots {
-            if let Ok((mut camera, ..)) = scene.mirror_cameras.get_mut(slot.entity) {
-                camera.is_active = false;
-            }
-        }
         return;
     };
     let Ok((camera, projection, camera_transform, exposure, atmosphere, environment)) =
@@ -161,7 +165,18 @@ fn sync_mirrors(
         material.reflections.view_count = 0;
         return;
     };
-    let Some(main_size) = camera.physical_viewport_size() else {
+    if !camera.is_active
+        || !scale.is_finite()
+        || !distortion.is_finite()
+        || !camera_transform.to_matrix().inverse().is_finite()
+        || !projection.get_clip_from_view().is_finite()
+    {
+        return;
+    }
+    let Some(main_size) = camera
+        .physical_viewport_size()
+        .filter(|s| s.x > 0 && s.y > 0)
+    else {
         return;
     };
     let target_size = (main_size.as_vec2() * scale.clamp(MIN_TARGET_SCALE, MAX_TARGET_SCALE))
@@ -447,6 +462,23 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn reset_disables_owned_cameras_without_touching_main_views() {
+        let mut app = App::new();
+        app.add_systems(Update, reset_mirror_activity);
+        let mirror = app
+            .world_mut()
+            .spawn((Camera::default(), MirrorCamera))
+            .id();
+        let main = app.world_mut().spawn(Camera::default()).id();
+        for _ in 0..2 {
+            app.world_mut().get_mut::<Camera>(mirror).unwrap().is_active = true;
+            app.update();
+            assert!(!app.world().get::<Camera>(mirror).unwrap().is_active);
+            assert!(app.world().get::<Camera>(main).unwrap().is_active);
         }
     }
 
