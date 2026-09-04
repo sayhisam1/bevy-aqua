@@ -239,7 +239,18 @@ fn sync_mirrors(
         .round()
         .as_uvec2()
         .max(UVec2::ONE);
-    let rebuilt = ensure_slots(&mut commands, &mut images, &mut scene.mirrors, target_size);
+    let cameras_intact = scene
+        .mirrors
+        .slots
+        .iter()
+        .all(|slot| scene.mirror_cameras.contains(slot.entity));
+    let rebuilt = ensure_slots(
+        &mut commands,
+        &mut images,
+        &mut scene.mirrors,
+        target_size,
+        cameras_intact,
+    );
     material.reflection_a = scene.mirrors.slots[0].image.clone();
     material.reflection_b = scene.mirrors.slots[1].image.clone();
     if rebuilt {
@@ -291,8 +302,10 @@ fn ensure_slots(
     images: &mut Assets<Image>,
     mirrors: &mut Mirrors,
     size: UVec2,
+    cameras_intact: bool,
 ) -> bool {
-    if mirrors.slots.len() == VIEW_LIMIT
+    if cameras_intact
+        && mirrors.slots.len() == VIEW_LIMIT
         && mirrors
             .slots
             .iter()
@@ -319,7 +332,9 @@ fn ensure_slots(
         return false;
     }
     for slot in mirrors.slots.drain(..) {
-        commands.entity(slot.entity).despawn();
+        // Hosts may already have despawned a slot; rebuild without queuing
+        // failing commands against its old generation.
+        commands.entity(slot.entity).try_despawn();
         images.remove(slot.image.id());
         images.remove(slot.raw.id());
     }
@@ -697,6 +712,68 @@ mod tests {
         assert!(!usable_level(10.005, 10.0));
         assert!(!usable_level(11.0, f32::NAN));
         assert!(!usable_level(f32::INFINITY, 10.0));
+    }
+
+    #[test]
+    fn missing_mirror_entity_rebuilds_slots_and_releases_old_images() {
+        fn maintain(
+            mut commands: Commands,
+            mut images: ResMut<Assets<Image>>,
+            mut mirrors: ResMut<Mirrors>,
+            cameras: Query<Entity, With<MirrorCamera>>,
+        ) {
+            let intact = mirrors
+                .slots
+                .iter()
+                .all(|slot| cameras.contains(slot.entity));
+            ensure_slots(
+                &mut commands,
+                &mut images,
+                &mut mirrors,
+                UVec2::new(32, 17),
+                intact,
+            );
+        }
+        let mut app = App::new();
+        app.init_resource::<Mirrors>()
+            .init_resource::<Assets<Image>>()
+            .add_systems(Update, maintain);
+        app.update();
+        let old: Vec<_> = app
+            .world()
+            .resource::<Mirrors>()
+            .slots
+            .iter()
+            .map(|s| (s.entity, s.image.id(), s.raw.id()))
+            .collect();
+        app.world_mut().entity_mut(old[0].0).despawn();
+        app.update();
+        let new: Vec<_> = app
+            .world()
+            .resource::<Mirrors>()
+            .slots
+            .iter()
+            .map(|s| s.entity)
+            .collect();
+        assert_eq!(new.len(), VIEW_LIMIT);
+        for (entity, image, raw) in old {
+            assert!(app.world().get_entity(entity).is_err());
+            assert!(app.world().resource::<Assets<Image>>().get(image).is_none());
+            assert!(app.world().resource::<Assets<Image>>().get(raw).is_none());
+        }
+        for &entity in &new {
+            assert!(app.world().get::<MirrorCamera>(entity).is_some());
+        }
+        app.update();
+        assert_eq!(
+            new,
+            app.world()
+                .resource::<Mirrors>()
+                .slots
+                .iter()
+                .map(|s| s.entity)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
