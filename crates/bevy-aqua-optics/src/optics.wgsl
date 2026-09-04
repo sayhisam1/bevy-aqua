@@ -309,16 +309,20 @@ fn resolve_near_surface(
     if mode >= DEBUG_MODE_BEAUTY {
         let near_weight = 1.0 - far_tier;
         var resolved_slope = normal.xz / max(normal.y, MIN_NORMAL_Y);
-        let detail = detail_normal_sample(
-            in.undisplaced_xz,
-            surface_lod,
-            in.sample_data.y,
-            invocation_ripple(),
-        );
-        resolved_slope += near_weight * detail.xy;
-        filtered_detail_variance = near_weight * near_weight * detail.z;
-        resolved_slope += near_weight * capillary_normal_slope(in.undisplaced_xz, invocation_ripple())
-            * capillary_resolved_weight(in.undisplaced_xz);
+        // At exactly zero near weight, omit only the finite detail terms.
+        // Keep slope reconstruction below: a geometric normal can have Y <= 0.
+        if near_weight != 0.0 {
+            let detail = detail_normal_sample(
+                in.undisplaced_xz,
+                surface_lod,
+                in.sample_data.y,
+                invocation_ripple(),
+            );
+            resolved_slope += near_weight * detail.xy;
+            filtered_detail_variance = near_weight * near_weight * detail.z;
+            resolved_slope += near_weight * capillary_normal_slope(in.undisplaced_xz, invocation_ripple())
+                * capillary_resolved_weight(in.undisplaced_xz);
+        }
         normal = safe_normalize(
             vec3(resolved_slope.x, 1.0, resolved_slope.y),
             vec3(0.0, 1.0, 0.0),
@@ -411,6 +415,35 @@ fn illuminate_bed(
     );
 }
 
+// Beauty-only attenuation. Diagnostics intentionally retain authored extinction.
+fn beauty_extinction(water_depth: f32) -> vec3<f32> {
+    let scale = mix(vec3(0.52, 0.42, 0.62), vec3(1.0), deep_water_weight(water_depth));
+    return invocation_extinction() * scale;
+}
+
+// Admission uses the SAME path selection and attenuation as near beauty.
+// False means keep near transmission; true also covers no transmissive
+// background under the existing contract (not proof of physical opacity).
+fn far_path_opaque(
+    in: SurfaceVertexOutput,
+    normal: vec3<f32>,
+    path: CameraDepthPath,
+) -> bool {
+    if !path.has_background || path.path_length <= LUMINANCE_EPSILON {
+        return true;
+    }
+    let accepted = camera_depth_debug_from_path(in, normal, path);
+    let water_path = select(
+        accepted.path_length,
+        accepted.refracted_path_length,
+        accepted.refracted_sample_valid,
+    );
+    let depth = blended_water_depth(in.undisplaced_xz);
+    let extinction = beauty_extinction(depth);
+    let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));
+    return minimum_extinction * water_path >= TRANSMISSION_OPAQUE_OPTICAL_DEPTH;
+}
+
 fn resolve_transmission(
     in: SurfaceVertexOutput,
     normal: vec3<f32>,
@@ -478,9 +511,7 @@ fn resolve_transmission(
         let depth_path = shared_depth_path;
         // Reduce extinction in the first few metres so the seabed stays
         // visible while the coastal scatter endpoint supplies turquoise color.
-        let deep_weight = smoothstep(0.35, surface.shallow_color.a, medium.water_depth);
-        let shallow_extinction_scale = mix(vec3(0.52, 0.42, 0.62), vec3(1.0), deep_weight);
-        let extinction = invocation_extinction() * shallow_extinction_scale;
+        let extinction = beauty_extinction(medium.water_depth);
         let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));
         if depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON {
             let depth_debug = camera_depth_debug_from_path(in, normal, depth_path);
