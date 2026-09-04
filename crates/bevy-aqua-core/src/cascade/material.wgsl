@@ -23,7 +23,7 @@
 #import aqua::waves::displace::{FFT_JONSWAP_SLOPE_VARIANCE, GERSTNER_SLOPE_VARIANCE, WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, crest_sss, detail_normal_sample, far_displacement, far_normal_cross, sample_fft_normal_cross}
 
 #import aqua::foam::contract::FOAM_PATTERN_RESOLUTION
-#import aqua::foam::shade::{CREST_FOAM_NORMAL_STRENGTH, CREST_FOAM_SPECULAR_BOOST, INV_PI, CREST_FOAM_SPECULAR_FALLOFF, CREST_FOAM_WHITE_COLOR, foam_bubble_colour, local_foam_light, river_streak_density, sample_foam_density, surface_foam_mask}
+#import aqua::foam::shade::{CREST_FOAM_NORMAL_STRENGTH, CREST_FOAM_SPECULAR_BOOST, INV_PI, CREST_FOAM_SPECULAR_FALLOFF, CREST_FOAM_WHITE_COLOR, foam_bubble_colour, local_foam_light, river_streak_coverage, sample_foam_density, surface_foam_mask}
 
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
 #import bevy_aqua_core::deform::{deform_current}
@@ -80,7 +80,7 @@ fn prepare_surface_foam(
     }
     // River bank streaks are independent of the persistent foam buffer:
     // they exist wherever fast water runs close to a bank.
-    let streak = river_streak_density(
+    let streak = river_streak_coverage(
         invocation_river_state(),
         in.world_position.xz,
         surface_lod,
@@ -88,13 +88,9 @@ fn prepare_surface_foam(
     );
     if streak > 0.0 {
         white_foam_density += streak;
-        white_foam += surface_foam_mask(
-            advected_world(in.undisplaced_xz),
-            surface_lod,
-            in.sample_data.y,
-            streak,
-            vec2(0.0),
-        );
+        // Streak is already patterned coverage. Re-thresholding it as a
+        // density fills the channel with white; combine the two masks once.
+        white_foam = 1.0 - (1.0 - white_foam) * (1.0 - streak);
     }
     return FoamState(
         visible_foam_density,
