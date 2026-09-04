@@ -166,6 +166,7 @@ pub fn update(
     frame.uniform.target_layout = target_layout.clone();
     frame.uniform.step.x = target_tick(time.elapsed_secs_f64());
     frame.uniform.step.z = u32::from(waves.model == WaveModel::Spectral);
+    frame.uniform.advection = Vec4::new(waves.flow.x, waves.flow.y, time.elapsed_secs(), 0.0);
     frame.simulated_layout = target_layout;
 }
 
@@ -200,6 +201,8 @@ struct Uniform {
     wave: Vec4,
     // shoreline outer depth, strength, wet-edge depth, breaker peak depth.
     shore: Vec4,
+    // XY global current (m/s), Z current wave-producer time (seconds).
+    advection: Vec4,
 }
 
 impl Uniform {
@@ -209,6 +212,7 @@ impl Uniform {
             target_layout: layout,
             step: UVec4::new(0, 1, 0, 0),
             wave: Vec4::new(STEP_SECONDS, FADE_RATE, WAVE_STRENGTH, WAVE_COVERAGE),
+            advection: Vec4::ZERO,
             shore: Vec4::new(
                 SHORE_OUTER_DEPTH,
                 SHORE_STRENGTH,

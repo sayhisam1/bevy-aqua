@@ -30,6 +30,8 @@ struct FoamUniform {
     step: vec4<u32>,
     wave: vec4<f32>,
     shore: vec4<f32>,
+    // XY global current (m/s), Z current wave-producer time (seconds).
+    advection: vec4<f32>,
 }
 
 @group(0) @binding(0) var source_foam: texture_2d_array<f32>;
@@ -80,12 +82,18 @@ fn reproject(world_xz: vec2<f32>, slice: u32, source: CascadeLayout) -> f32 {
     return 0.0;
 }
 
+// Wave textures are generated in unadvected phase coordinates. Foam state,
+// target/source cascade layouts, and the bed remain world anchored.
+fn wave_sample_xz(world_xz: vec2<f32>) -> vec2<f32> {
+    return world_xz - foam.advection.xy * foam.advection.z;
+}
+
 fn displacement(world_xz: vec2<f32>, slice: u32) -> vec4<f32> {
     let cascade = foam.target_layout.cascades[slice];
     return textureSampleLevel(
         anim_waves,
         waves_sampler,
-        world_to_uv(world_xz, cascade),
+        world_to_uv(wave_sample_xz(world_xz), cascade),
         i32(slice),
         0.0,
     );
@@ -100,7 +108,7 @@ fn jacobian_foam_source(
         let determinant = textureSampleLevel(
             fft_surface,
             waves_sampler,
-            world_to_uv(world_xz, cascade),
+            world_to_uv(wave_sample_xz(world_xz), cascade),
             i32(slice),
             0.0,
         ).w;
@@ -194,9 +202,12 @@ fn update(id: vec3<u32>, use_previous_layout: bool, dt: f32) {
     let slice = id.z;
     let cascade = foam.target_layout.cascades[slice];
     let world_xz = texel_world(id.xy, cascade);
-    var density = reproject(world_xz, slice, foam.target_layout);
+    // Semi-Lagrangian history: one current displacement per fixed sim tick.
+    // Layout-only reprojection has dt=0, so it cannot advect a second time.
+    let history_xz = world_xz - foam.advection.xy * dt;
+    var density = reproject(history_xz, slice, foam.target_layout);
     if use_previous_layout {
-        density = reproject(world_xz, slice, foam.source_layout);
+        density = reproject(history_xz, slice, foam.source_layout);
     }
 
     density *= max(0.0, 1.0 - foam.wave.y * dt);
