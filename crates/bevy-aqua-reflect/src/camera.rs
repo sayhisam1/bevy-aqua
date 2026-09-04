@@ -79,7 +79,6 @@ struct Scene<'w, 's> {
 
 pub(super) fn add(app: &mut App) {
     app.init_resource::<Mirrors>()
-        .add_systems(Update, include_directional_lights)
         .add_systems(
             PostUpdate,
             (
@@ -98,39 +97,64 @@ pub(super) fn add(app: &mut App) {
         );
 }
 
+#[derive(Default)]
+struct ReflectionLayerOwnership {
+    owned: std::collections::HashSet<Entity>,
+    wanted: std::collections::HashSet<Entity>,
+    stack: Vec<Entity>,
+}
+
 fn include_marked(
     mut commands: Commands,
     roots: Query<Entity, With<ReflectedInWater>>,
+    lights: Query<Entity, With<DirectionalLight>>,
     hierarchy: Query<(Option<&RenderLayers>, Option<&Children>)>,
+    mut state: Local<ReflectionLayerOwnership>,
 ) {
-    let reflection = RenderLayers::layer(REFLECTION_LAYER);
-    let mut stack = Vec::new();
-    for root in &roots {
-        stack.push(root);
-        while let Some(entity) = stack.pop() {
-            let Ok((layers, children)) = hierarchy.get(entity) else {
-                continue;
-            };
-            if !layers.is_some_and(|layers| layers.intersects(&reflection)) {
-                commands
-                    .entity(entity)
-                    .insert(layers.cloned().unwrap_or_default().with(REFLECTION_LAYER));
-            }
-            if let Some(children) = children {
-                stack.extend(children.iter());
-            }
+    let ReflectionLayerOwnership {
+        owned,
+        wanted,
+        stack,
+    } = &mut *state;
+    wanted.clear();
+    stack.clear();
+    stack.extend(roots.iter());
+    while let Some(entity) = stack.pop() {
+        if !wanted.insert(entity) {
+            continue;
+        }
+        if let Ok((_, Some(children))) = hierarchy.get(entity) {
+            stack.extend(children.iter());
         }
     }
-}
-
-fn include_directional_lights(
-    mut commands: Commands,
-    lights: Query<(Entity, Option<&RenderLayers>), Added<DirectionalLight>>,
-) {
-    for (entity, layers) in &lights {
-        commands
-            .entity(entity)
-            .insert(layers.cloned().unwrap_or_default().with(REFLECTION_LAYER));
+    // Lights participate directly, not by claiming their whole hierarchy.
+    wanted.extend(lights.iter());
+    let reflection = RenderLayers::layer(REFLECTION_LAYER);
+    owned.retain(|entity| {
+        if wanted.contains(entity) {
+            return true;
+        }
+        if let Ok((Some(layers), _)) = hierarchy.get(*entity) {
+            if layers.intersects(&reflection) {
+                commands
+                    .entity(*entity)
+                    .insert(layers.clone().without(REFLECTION_LAYER));
+            }
+        }
+        false // Includes despawned entities: no stale ownership remains.
+    });
+    for &entity in wanted.iter() {
+        let Ok((layers, _)) = hierarchy.get(entity) else {
+            continue;
+        };
+        if !layers.is_some_and(|layers| layers.intersects(&reflection)) {
+            commands
+                .entity(entity)
+                .insert(layers.cloned().unwrap_or_default().with(REFLECTION_LAYER));
+            owned.insert(entity);
+        }
+        // Pre-existing host layer31 is not ours to revoke. Hosts that want
+        // permanent ownership must set that bit before opting into Aqua.
     }
 }
 
@@ -705,6 +729,76 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn removed_markers_and_reparented_children_release_only_owned_bits() {
+        let mut app = App::new();
+        app.add_systems(Update, include_marked);
+        let root = app
+            .world_mut()
+            .spawn((ReflectedInWater, RenderLayers::layer(7)))
+            .id();
+        let child = app
+            .world_mut()
+            .spawn((ChildOf(root), RenderLayers::layer(8)))
+            .id();
+        let host = app
+            .world_mut()
+            .spawn((ChildOf(root), RenderLayers::layer(31).with(9)))
+            .id();
+        app.update();
+        app.world_mut().entity_mut(child).remove::<ChildOf>();
+        app.update();
+        let layers = app.world().get::<RenderLayers>(child).unwrap();
+        assert_eq!(*layers, RenderLayers::layer(8));
+        app.world_mut()
+            .entity_mut(root)
+            .remove::<ReflectedInWater>();
+        app.update();
+        assert_eq!(
+            *app.world().get::<RenderLayers>(root).unwrap(),
+            RenderLayers::layer(7)
+        );
+        assert_eq!(
+            *app.world().get::<RenderLayers>(host).unwrap(),
+            RenderLayers::layer(31).with(9)
+        );
+    }
+
+    #[test]
+    fn nested_markers_keep_membership_and_removed_lights_release_it() {
+        let mut app = App::new();
+        app.add_systems(Update, include_marked);
+        let root = app.world_mut().spawn(ReflectedInWater).id();
+        let child = app
+            .world_mut()
+            .spawn((ChildOf(root), ReflectedInWater))
+            .id();
+        let light = app
+            .world_mut()
+            .spawn((DirectionalLight::default(), RenderLayers::layer(4)))
+            .id();
+        app.update();
+        app.world_mut()
+            .entity_mut(root)
+            .remove::<ReflectedInWater>();
+        app.world_mut()
+            .entity_mut(light)
+            .remove::<DirectionalLight>();
+        app.update();
+        assert!(
+            app.world()
+                .get::<RenderLayers>(child)
+                .unwrap()
+                .intersects(&RenderLayers::layer(31))
+        );
+        assert_eq!(
+            *app.world().get::<RenderLayers>(light).unwrap(),
+            RenderLayers::layer(4)
+        );
+        app.world_mut().entity_mut(root).despawn();
+        app.update(); // Despawned owned entries must not issue stale commands.
     }
 
     #[test]
