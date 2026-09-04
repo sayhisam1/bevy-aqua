@@ -99,7 +99,7 @@ fn prepare_surface_foam(
     return FoamState(
         visible_foam_density,
         white_foam_density,
-        white_foam,
+        clamp(white_foam, 0.0, 1.0),
         shared_depth_path,
         has_shared_depth_path,
     );
@@ -234,7 +234,7 @@ fn shade_water_body(
     let foam_factor = smoothstep(
         0.0,
         1.0,
-        medium.foam_density * 0.75,
+        foam.white_density * 0.75,
     ) * foam_distance_fade;
     let foam_roughness = (1.0 - fresnel) * foam_factor;
     let environment_roughness = clamp(
@@ -342,7 +342,8 @@ fn shade_local_lights(
     }
     let view_vertical = abs(to_view.y);
     let local_grazing = max(1.0 - view_vertical * view_vertical, 0.0);
-    let foam_active = foam.visible_density > 0.0;
+    // Authored bank streaks can exist without persistent whitecaps.
+    let foam_active = foam.white_density > 0.0;
     var foam_normal = near.normal;
     if foam_active {
         let pixel_z = max(-primary.view_z, 0.0);
@@ -460,8 +461,8 @@ fn compose_water(
         return vec4(reflected_radiance * reflection_weight, 1.0);
     }
     var water = mix(local.body, reflected_radiance, reflection_weight);
-    if foam.visible_density > 0.0 {
-        let mask = CREST_FOAM_WHITE_COLOR.a * foam.white_mask;
+    if foam.white_mask > 0.0 {
+        let mask = clamp(CREST_FOAM_WHITE_COLOR.a * foam.white_mask, 0.0, 1.0);
 
         // Crest `OceanFoam.hlsl`: shipped 3D foam lighting. Bevy's scene
         // diffuse irradiance replaces Unity SH L0; no constant ambient term
