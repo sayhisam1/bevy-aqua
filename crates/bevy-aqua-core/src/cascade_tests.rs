@@ -177,3 +177,13 @@ fn detail_mips_leave_constant_slopes_without_variance() {
     let second_moment = 2.0 * filtered[2] as f32 / 255.0;
     assert!((second_moment - mean.length_squared()).abs() < 0.015);
 }
+
+#[test]
+fn default_sun_floor_preserves_wave_roughness_and_body_inheritance() {
+    let surface = SurfaceParams::default();
+    assert_eq!(surface.sun, Vec4::new(1.0, 0.04, 0.0, 1.0));
+    assert_eq!(surface.reflection.y, 1.0);
+    assert_eq!(surface.reflection.w, 0.28);
+    assert_eq!(WaterOptics::CLEAR_FRESH.sun_roughness, 0.1);
+    assert!(WaterOptics::DEEP_OCEAN.sun_roughness < 0.0);
+}
