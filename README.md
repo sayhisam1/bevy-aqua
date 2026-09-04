@@ -235,6 +235,16 @@ may need an appearance review. That Fresnel change does not alter public fields
 or GPU layouts; the separate wave-spectrum and roughness changes do. See
 [MIGRATION.md](MIGRATION.md) for `BinSpec` and surface-uniform updates.
 
+Water lighting also retains resolved wave-normal slopes in both near and far
+shading. This differs from the former GodotOceanWaves-style exponential
+lighting-normal fade, so existing scenes can show stronger wave reflections at
+a distance. Near and far shading share the normal and wave-roughness calculation.
+
+The direct-sun GGX alpha default, wave-roughness cap, Fresnel model, and separate
+detail, capillary, and foam fades are unchanged. Footprint-based roughness and
+detail mip filtering remain; geometric/FFT normals are not fully convolved over
+each pixel footprint. This is not a guarantee of alias-free rendering.
+
 ## Debug-mode migration (unreleased)
 
 Two `AquaDebug` variants have been removed:
