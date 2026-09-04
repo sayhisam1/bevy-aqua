@@ -192,7 +192,7 @@ fn sync_mirrors(
     }
 
     let main_transform = camera_transform.compute_transform();
-    let levels = visible_levels(&scene, camera_transform.translation().xz());
+    let levels = visible_levels(&scene, camera_transform.translation());
     let count = levels.len();
     let mirror_order = camera.order.saturating_sub(1);
     for (index, slot) in scene.mirrors.slots.iter().enumerate() {
@@ -310,14 +310,19 @@ fn ensure_slots(
     true
 }
 
-fn visible_levels(scene: &Scene, camera_xz: Vec2) -> Vec<f32> {
+fn visible_levels(scene: &Scene, camera_position: Vec3) -> Vec<f32> {
+    let camera_xz = camera_position.xz();
     let mut candidates = Vec::new();
     if let Some(ocean) = &scene.ocean {
-        candidates.push((0.0, ocean.level));
+        if usable_level(camera_position.y, ocean.level) {
+            candidates.push((0.0, ocean.level));
+        }
     }
     for body in &scene.bodies.0 {
         let (center, _) = body.extent();
-        candidates.push((center.distance_squared(camera_xz), body.level));
+        if usable_level(camera_position.y, body.level) {
+            candidates.push((center.distance_squared(camera_xz), body.level));
+        }
     }
     candidates.sort_by(|left, right| left.0.total_cmp(&right.0));
     let mut levels: Vec<f32> = Vec::with_capacity(VIEW_LIMIT);
@@ -333,6 +338,11 @@ fn visible_levels(scene: &Scene, camera_xz: Vec2) -> Vec<f32> {
         }
     }
     levels
+}
+
+// These cameras render above-surface reflection, not underwater optics.
+fn usable_level(camera_y: f32, level: f32) -> bool {
+    camera_y.is_finite() && level.is_finite() && camera_y - level > LEVEL_EPSILON_METRES
 }
 
 fn mirror_view(
@@ -480,6 +490,16 @@ mod tests {
             assert!(!app.world().get::<Camera>(mirror).unwrap().is_active);
             assert!(app.world().get::<Camera>(main).unwrap().is_active);
         }
+    }
+
+    #[test]
+    fn mirror_level_requires_eye_above_mean_surface() {
+        assert!(usable_level(10.1, 10.0));
+        assert!(!usable_level(10.0, 10.0));
+        assert!(!usable_level(9.0, 10.0));
+        assert!(!usable_level(10.005, 10.0));
+        assert!(!usable_level(11.0, f32::NAN));
+        assert!(!usable_level(f32::INFINITY, 10.0));
     }
 
     #[test]
