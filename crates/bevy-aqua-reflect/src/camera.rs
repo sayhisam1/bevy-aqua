@@ -57,7 +57,6 @@ struct Scene<'w, 's> {
             &'static Projection,
             &'static GlobalTransform,
             Option<&'static Exposure>,
-            Option<&'static AtmosphereSettings>,
             Option<&'static EnvironmentMapLight>,
         ),
         (With<OceanView>, Without<AuxiliaryWaterView>),
@@ -157,9 +156,20 @@ fn include_marked(
 
 // Run before synchronization, including when its material/view prerequisites
 // are missing. Only fully validated synchronization can reactivate a mirror.
-fn reset_mirror_activity(mut cameras: Query<&mut Camera, With<MirrorCamera>>) {
-    for mut camera in &mut cameras {
+fn reset_mirror_activity(
+    mut commands: Commands,
+    mut cameras: Query<(Entity, &mut Camera, Has<AtmosphereSettings>), With<MirrorCamera>>,
+) {
+    for (entity, mut camera, has_atmosphere) in &mut cameras {
         camera.is_active = false;
+        // Planar export rejects sky pixels and uses the main environment instead.
+        // Do not run atmosphere generation from a reflected, potentially
+        // below-ground eye: Bevy 0.19 writes every atmosphere probe from every
+        // atmosphere view, so the mirror can overwrite the main sky map black.
+        // Strip stale settings even when sync_mirrors exits before updating slots.
+        if has_atmosphere {
+            commands.entity(entity).remove::<AtmosphereSettings>();
+        }
     }
 }
 
@@ -178,7 +188,7 @@ fn sync_mirrors(
     let ReflectionMode::Planar { scale, distortion } = settings.reflections else {
         return;
     };
-    let Ok((camera, projection, camera_transform, exposure, atmosphere, environment)) =
+    let Ok((camera, projection, camera_transform, exposure, environment)) =
         scene.main_camera.single()
     else {
         material.reflections.view_count = 0;
@@ -265,11 +275,6 @@ fn sync_mirrors(
             commands.entity(slot.entity).insert(environment.clone());
         } else {
             commands.entity(slot.entity).remove::<EnvironmentMapLight>();
-        }
-        if let Some(atmosphere) = atmosphere {
-            commands.entity(slot.entity).insert(atmosphere.clone());
-        } else {
-            commands.entity(slot.entity).remove::<AtmosphereSettings>();
         }
     }
     material.reflections.view_count = count as u32;
@@ -527,6 +532,28 @@ mod tests {
             app.update();
             assert!(!app.world().get::<Camera>(mirror).unwrap().is_active);
             assert!(app.world().get::<Camera>(main).unwrap().is_active);
+        }
+    }
+
+    #[test]
+    fn mirrors_never_keep_atmosphere_settings_but_main_views_do() {
+        let mut app = App::new();
+        app.add_systems(Update, reset_mirror_activity);
+        let mirror = app
+            .world_mut()
+            .spawn((Camera::default(), MirrorCamera))
+            .id();
+        let main = app
+            .world_mut()
+            .spawn((Camera::default(), AtmosphereSettings::default()))
+            .id();
+        for _ in 0..2 {
+            app.world_mut()
+                .entity_mut(mirror)
+                .insert(AtmosphereSettings::default());
+            app.update();
+            assert!(app.world().get::<AtmosphereSettings>(mirror).is_none());
+            assert!(app.world().get::<AtmosphereSettings>(main).is_some());
         }
     }
 
