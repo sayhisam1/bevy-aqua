@@ -204,8 +204,14 @@ This differs from the former GodotOceanWaves-style exponential lighting-normal
 fade, so existing scenes can show stronger wave reflections at a distance.
 Near and far shading share the normal and wave-roughness calculation.
 
-The direct-sun GGX alpha default, wave-roughness cap, Fresnel model, and separate
-detail, capillary, and foam fades are unchanged. Footprint-based roughness and
+The direct-sun GGX alpha floor now defaults to `0.04` (previously `0.4`) for
+narrower base highlights. Filtered wave variance still adds roughness. This floor
+also feeds the existing subsurface-light mask; it is an appearance setting, not a
+physically calibrated water parameter. Explicit per-body `sun_roughness` values
+still override the global floor; negative values inherit it.
+
+The wave-roughness cap, Fresnel model, and separate detail, capillary, and foam
+fades are unchanged. Footprint-based roughness and
 detail mip filtering remain; geometric/FFT normals are not fully convolved over
 each pixel footprint. This is not a guarantee of alias-free rendering.
 

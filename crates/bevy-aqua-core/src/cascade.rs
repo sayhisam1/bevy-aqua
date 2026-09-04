@@ -349,8 +349,9 @@ impl Default for SurfaceParams {
             fresnel: Vec4::new(0.020_373_19, 5.0, 1.0, 0.0),
             // FFT flag, micro-roughness strength, daylight lux, maximum roughness.
             reflection: Vec4::new(0.0, 1.0, 10_000.0, 0.28),
-            // Godot direct-sun strength/GGX floor, atmospheric sunlight filter, reserved.
-            sun: Vec4::new(1.0, 0.4, 0.0, 1.0),
+            // Direct-sun strength/GGX alpha floor, atmospheric sunlight filter, reserved.
+            // A narrow base lobe preserves wave glints; filtered wave variance adds width.
+            sun: Vec4::new(1.0, 0.04, 0.0, 1.0),
             // Mode, shader-property refraction (`Ocean.shader:148`), debug range, reserved.
             // Shipped `Ocean.mat:145` uses strength 1.0; Aqua retains 0.5 for the accepted view.
             debug: Vec4::new(0.0, 0.5, 32.0, 0.0),
