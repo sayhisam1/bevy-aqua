@@ -160,7 +160,7 @@ fn averaged_foam_source(
     );
 }
 
-// Water depth below sea level. Unmapped samples use the cleared full-depth value.
+// Signed sea-level minus bed height. Unmapped samples use full depth.
 fn bed_water_depth(world_xz: vec2<f32>) -> f32 {
     let range = foam.target_layout.bed_range;
     if range.y < 0.0 {
@@ -192,7 +192,7 @@ fn bed_water_depth(world_xz: vec2<f32>) -> f32 {
         fraction.x,
     );
     let height = mix(row_0, row_1, fraction.y) * range.y + range.x;
-    return max(range.z - height, 0.0);
+    return range.z - height;
 }
 
 fn update(id: vec3<u32>, use_previous_layout: bool, dt: f32) {
@@ -216,16 +216,19 @@ fn update(id: vec3<u32>, use_previous_layout: bool, dt: f32) {
     density += 5.0 * dt * foam.wave.z
         * averaged_foam_source(world_xz, slice, cascade);
 
-    var depth = bed_water_depth(world_xz + center.xz) + center.y;
+    let depth = bed_water_depth(world_xz + center.xz) + center.y;
+    // Signed instantaneous depth rejects dry land and permits wave run-up.
+    let wet = smoothstep(0.0, 0.1 * foam.shore.z, depth);
     // Two world-anchored finite bands: a wet edge and a breaking-wave band.
     // Persistent reprojection and decay filter both under camera motion.
     let wet_edge = 1.0 - smoothstep(foam.shore.z, 2.0 * foam.shore.z, depth);
     let breaker_rise = smoothstep(foam.shore.z, foam.shore.w, depth);
     let breaker_fall = 1.0 - smoothstep(foam.shore.w, foam.shore.x, depth);
-    let shore_source = max(wet_edge, 0.18 * breaker_rise * breaker_fall);
+    let shore_source = wet * max(wet_edge, 0.18 * breaker_rise * breaker_fall);
     density += foam.shore.y * dt * shore_source;
 
-    density = clamp(density, 0.0, 1.0);
+    // Also remove old foam and whitecap injection on newly exposed bed.
+    density = select(0.0, clamp(density, 0.0, 1.0), depth > 0.0);
     textureStore(target_foam, vec2<i32>(id.xy), i32(slice), vec4(density, 0.0, 0.0, 0.0));
 }
 

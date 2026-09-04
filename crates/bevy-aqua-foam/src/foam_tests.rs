@@ -76,3 +76,18 @@ fn foam_advection_uniform_follows_the_two_layouts_and_source_parameters() {
     });
     assert_eq!(values, [2.0, 0.6, 6.0, 0.0]);
 }
+
+#[test]
+fn shoreline_depth_keeps_dry_bed_signed_until_wave_height_is_added() {
+    let shader = include_str!("foam.wgsl");
+    assert!(shader.contains("return range.z - height;"));
+    assert!(!shader.contains("return max(range.z - height, 0.0);"));
+    assert!(shader.contains("bed_water_depth(world_xz + center.xz) + center.y"));
+    assert!(shader.contains("let shore_source = wet * max("));
+    assert!(shader.contains("select(0.0, clamp(density, 0.0, 1.0), depth > 0.0)"));
+    let signed_depth = |sea: f32, bed: f32, wave: f32| sea - bed + wave;
+    assert!(signed_depth(0.0, 0.4, 0.2) < 0.0); // still dry
+    assert!(signed_depth(0.0, 0.4, 0.6) > 0.0); // actual run-up
+    assert!(signed_depth(0.0, -0.4, -0.6) < 0.0); // exposed by trough
+    assert_eq!(signed_depth(0.0, 0.4, 0.4), 0.0);
+}
