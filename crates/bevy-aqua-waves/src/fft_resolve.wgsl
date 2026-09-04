@@ -87,8 +87,11 @@ fn resolve(@builtin(global_invocation_id) id: vec3<u32>) {
             let packed = textureLoad(height_x, vec2<i32>(id.xy), i32(layer), 0);
             let z = textureLoad(z_field, vec2<i32>(id.xy), i32(layer), 0).x;
             let octave_fraction = (f32(bin) + 0.5) / f32(bins);
-            let representative_wavelength = 0.5 * cascade.max_wavelength
-                * exp2(octave_fraction);
+            let minimum = 0.5 * cascade.max_wavelength;
+            let maximum = select(cascade.max_wavelength, coverage / 4.0,
+                id.z == LOD_COUNT - 1u);
+            let representative_wavelength = minimum
+                * exp2(octave_fraction * log2(maximum / minimum));
             let wave_number = 2.0 * 3.141592653589793 / representative_wavelength;
             let shoaling = shoaling_weights(depth, wave_number);
             let attenuation = mix(vec2(1.0), shoaling, fft.params.y);
