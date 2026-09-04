@@ -72,3 +72,6 @@ mod tests {
 
 #[cfg(test)]
 mod far_opacity_tests;
+
+#[cfg(test)]
+mod resolved_normal_tests;

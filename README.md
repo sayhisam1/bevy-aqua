@@ -197,6 +197,18 @@ CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-server-runner \
 
 See [`examples/README.md`](examples/README.md) for the full command list.
 
+## Lighting appearance compatibility
+
+Water lighting retains resolved wave-normal slopes in both near and far shading.
+This differs from the former GodotOceanWaves-style exponential lighting-normal
+fade, so existing scenes can show stronger wave reflections at a distance.
+Near and far shading share the normal and wave-roughness calculation.
+
+The direct-sun GGX alpha default, wave-roughness cap, Fresnel model, and separate
+detail, capillary, and foam fades are unchanged. Footprint-based roughness and
+detail mip filtering remain; geometric/FFT normals are not fully convolved over
+each pixel footprint. This is not a guarantee of alias-free rendering.
+
 ## AI disclosure
 
 This project was developed with assistance from AI coding agents.

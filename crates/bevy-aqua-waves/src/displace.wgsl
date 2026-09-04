@@ -16,8 +16,8 @@ const CAPILLARY_ROTATION: mat2x2<f32> = mat2x2(
     vec2(-0.573576, 0.819152),
 );
 
-// Mean square of the decoded WaveNormals.png XY slope. Resolved fade energy
-// moves into unresolved roughness instead of disappearing with distance.
+// Mean square of the decoded WaveNormals.png XY slope. Used to account for
+// mip-filtered detail and separately distance-faded capillary variance.
 const WAVE_NORMALS_SLOPE_VARIANCE: f32 = 0.05602466;
 const NORMAL_SCROLL_MULTIPLIER: f32 = 1.875;
 const NORMAL_SCROLL_POWER: f32 = 1.4;

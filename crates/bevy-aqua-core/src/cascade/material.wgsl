@@ -596,11 +596,10 @@ fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
     }
     if far_tier > 0.0 {
         far_water = far_field_water(
-            in.world_position,
+            in,
             surface_level,
-            geometric_normal,
+            near,
             to_view,
-            in.sample_data.z,
             far_water_depth,
         );
         if far_tier >= 1.0 {
