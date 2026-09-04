@@ -411,6 +411,46 @@ mod tests {
     }
 
     #[test]
+    fn planar_slope_projection_matches_uv_differential_across_camera_bases() {
+        let projection = PerspectiveProjection::default();
+        for yaw in [0.0_f32, 90.0, 180.0, 270.0] {
+            for pitch in [-30.0_f32, -5.0, 5.0] {
+                for roll in [-20.0_f32, 0.0, 20.0] {
+                    let main = Transform::from_xyz(0.0, 8.0, 0.0).with_rotation(Quat::from_euler(
+                        EulerRot::YXZ,
+                        yaw.to_radians(),
+                        pitch.to_radians(),
+                        roll.to_radians(),
+                    ));
+                    let (mirror, p) = mirror_view(&main, &projection, 0.0);
+                    let matrix = p.get_clip_from_view() * mirror.to_matrix().inverse();
+                    let point = mirror
+                        .to_matrix()
+                        .transform_point3(Vec3::new(1.0, -0.5, -25.0));
+                    let slope = Vec3::new(0.17, 0.0, -0.23);
+                    let clip = matrix * point.extend(1.0);
+                    let ndc = clip.truncate() / clip.w;
+                    let delta = matrix * slope.extend(0.0);
+                    let expected =
+                        0.5 * Vec2::new(delta.x - ndc.x * delta.w, -delta.y + ndc.y * delta.w);
+                    let uv = |p: Vec3| {
+                        let c = matrix * p.extend(1.0);
+                        c.xy() / c.w * Vec2::new(0.5, -0.5) + Vec2::splat(0.5)
+                    };
+                    let epsilon = 0.002;
+                    let finite = (uv(point + slope * clip.w * epsilon)
+                        - uv(point - slope * clip.w * epsilon))
+                        / (2.0 * epsilon);
+                    assert!(
+                        expected.distance(finite) < 0.0001,
+                        "yaw {yaw} pitch {pitch} roll {roll}: {expected:?} vs {finite:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn mirror_projection_preserves_surface_uv_across_pitch() {
         let projection = PerspectiveProjection {
             aspect_ratio: 16.0 / 9.0,
