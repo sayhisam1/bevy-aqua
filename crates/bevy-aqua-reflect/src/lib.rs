@@ -1,6 +1,7 @@
 //! Mirrored scene views for Aqua water surfaces.
 
 mod camera;
+mod resolve;
 
 use bevy::prelude::*;
 
@@ -10,6 +11,7 @@ pub struct AquaReflectPlugin;
 impl Plugin for AquaReflectPlugin {
     fn build(&self, app: &mut App) {
         camera::add(app);
+        resolve::add(app);
     }
 }
 

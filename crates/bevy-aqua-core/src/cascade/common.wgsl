@@ -226,10 +226,10 @@ fn sample_planar_reflection(
             0.0,
         );
     }
-    // Deferred HDR alpha is not a validity signal. In-bounds projected pixels
-    // remain fully planar; only displaced projections beyond the target feather.
-    let weight = 1.0 - smoothstep(0.0, PLANAR_PROJECTION_GUARD, max(outside, 0.0));
-    return PlanarReflectionSample(sample.rgb, weight);
+    // Exported alpha is depth-derived coverage, never deferred HDR alpha.
+    let coverage = clamp(sample.a, 0.0, 1.0);
+    let weight = coverage * (1.0 - smoothstep(0.0, PLANAR_PROJECTION_GUARD, max(outside, 0.0)));
+    return PlanarReflectionSample(sample.rgb / max(coverage, 1e-6), weight);
 }
 
 // Effective current for wave advection at the current invocation: the

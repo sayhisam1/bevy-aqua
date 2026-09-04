@@ -37,6 +37,7 @@ struct MirrorCamera;
 struct MirrorSlot {
     entity: Entity,
     image: Handle<Image>,
+    raw: Handle<Image>,
 }
 
 #[derive(Resource, Debug, Default)]
@@ -228,7 +229,7 @@ fn ensure_slots(
         && mirrors
             .slots
             .iter()
-            .all(|slot| images.get(&slot.image).is_some())
+            .all(|slot| images.get(&slot.image).is_some() && images.get(&slot.raw).is_some())
     {
         if mirrors.size != size {
             let extent = Extent3d {
@@ -237,6 +238,10 @@ fn ensure_slots(
                 depth_or_array_layers: 1,
             };
             for slot in &mirrors.slots {
+                images
+                    .get_mut(&slot.raw)
+                    .expect("raw mirror image")
+                    .resize(extent);
                 images
                     .get_mut(&slot.image)
                     .expect("mirror image existence checked above")
@@ -249,10 +254,12 @@ fn ensure_slots(
     for slot in mirrors.slots.drain(..) {
         commands.entity(slot.entity).despawn();
         images.remove(slot.image.id());
+        images.remove(slot.raw.id());
     }
     mirrors.size = size;
     for _ in 0..VIEW_LIMIT {
         let image = images.add(reflection_image(size));
+        let raw = images.add(reflection_image(size));
         let entity = commands
             .spawn((
                 Camera3d::default(),
@@ -263,7 +270,8 @@ fn ensure_slots(
                     clear_color: ClearColorConfig::Custom(Color::NONE),
                     ..default()
                 },
-                RenderTarget::Image(image.clone().into()),
+                RenderTarget::Image(raw.clone().into()),
+                crate::resolve::ReflectionOutput(image.clone()),
                 Hdr,
                 DepthPrepass,
                 DeferredPrepass,
@@ -274,7 +282,7 @@ fn ensure_slots(
                 MirrorCamera,
             ))
             .id();
-        mirrors.slots.push(MirrorSlot { entity, image });
+        mirrors.slots.push(MirrorSlot { entity, image, raw });
     }
     true
 }
@@ -335,7 +343,8 @@ fn reflection_image(size: UVec2) -> Image {
         TextureFormat::Rgba16Float,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
-    image.texture_descriptor.usage |= TextureUsages::RENDER_ATTACHMENT;
+    image.texture_descriptor.usage |=
+        TextureUsages::RENDER_ATTACHMENT | TextureUsages::STORAGE_BINDING;
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         mag_filter: ImageFilterMode::Linear,
         min_filter: ImageFilterMode::Linear,
