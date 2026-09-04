@@ -200,10 +200,10 @@ fn far_field_water(
     return mix(body, reflected_radiance, reflection_weight);
 }
 
-fn camera_eye_depth(uv: vec2<f32>, raw_depth: f32) -> f32 {
+fn camera_view_position(uv: vec2<f32>, raw_depth: f32) -> vec3<f32> {
     let ndc = vec3(uv * vec2(2.0, -2.0) + vec2(-1.0, 1.0), raw_depth);
-    let view_position = view.view_from_clip * vec4(ndc, 1.0);
-    return max(-view_position.z / max(view_position.w, LUMINANCE_EPSILON), 0.0);
+    let position = view.view_from_clip * vec4(ndc, 1.0);
+    return position.xyz / max(position.w, LUMINANCE_EPSILON);
 }
 
 fn empty_camera_depth_path() -> CameraDepthPath {
@@ -227,9 +227,16 @@ fn camera_depth_path(in: SurfaceVertexOutput) -> CameraDepthPath {
     );
     let scene_raw_depth = prepass_utils::prepass_depth(in.position, 0u);
     result.has_background = scene_raw_depth > 0.0;
-    result.scene_z = camera_eye_depth(result.screen_uv, scene_raw_depth);
-    let pixel_z = max(-(view.view_from_world * in.world_position).z, 0.0);
-    result.path_length = max(result.scene_z - pixel_z, 0.0);
+    if result.has_background {
+        let background = camera_view_position(result.screen_uv, scene_raw_depth);
+        let water = (view.view_from_world * in.world_position).xyz;
+        result.scene_z = max(-background.z, 0.0);
+        // Axial Z separation is shorter than the ray away from screen centre.
+        // Euclidean view-space distance also works for orthographic cameras.
+        if background.z < water.z {
+            result.path_length = length(background - water);
+        }
+    }
 #endif
     return result;
 }
@@ -244,6 +251,7 @@ fn camera_depth_debug_from_path(
 ) -> CameraDepthDebug {
     var result: CameraDepthDebug;
     result.path_length = path.path_length;
+    result.refracted_path_length = path.path_length;
     result.screen_uv = path.screen_uv;
     result.refracted_uv = path.screen_uv;
     result.refracted_sample_valid = false;
@@ -262,7 +270,13 @@ fn camera_depth_debug_from_path(
         + view.viewport.xy;
     let refracted_position = vec4(refracted_pixel, in.position.zw);
     let refracted_raw_depth = prepass_utils::prepass_depth(refracted_position, 0u);
-    result.refracted_sample_valid = refracted_raw_depth < in.position.z;
+    result.refracted_sample_valid = refracted_raw_depth > 0.0
+        && refracted_raw_depth < in.position.z;
+    if result.refracted_sample_valid {
+        let background = camera_view_position(result.refracted_uv, refracted_raw_depth);
+        let water = (view.view_from_world * in.world_position).xyz;
+        result.refracted_path_length = length(background - water);
+    }
 #endif
     return result;
 }
@@ -445,7 +459,12 @@ fn resolve_transmission(
         // Crest `OceanEmission.hlsl:254-266`: per-channel Beer-Lambert fog.
         // The colour ramp emerges from extinction; there is no authored ramp.
         let lit_scene = illuminate_bed(scene_colour, in, medium, primary);
-        let alpha = 1.0 - exp(-invocation_extinction() * depth_debug.path_length);
+        let water_path = select(
+            depth_debug.path_length,
+            depth_debug.refracted_path_length,
+            use_refraction,
+        );
+        let alpha = 1.0 - exp(-invocation_extinction() * water_path);
         body = mix(lit_scene, scatter_colour, alpha);
         if mode == DEBUG_MODE_BEER_LAMBERT {
             return TransmissionState(body, vec4(body, 1.0), true);
@@ -462,25 +481,30 @@ fn resolve_transmission(
         let shallow_extinction_scale = mix(vec3(0.52, 0.42, 0.62), vec3(1.0), deep_weight);
         let extinction = invocation_extinction() * shallow_extinction_scale;
         let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));
-        let optical_depth = minimum_extinction * depth_path.path_length;
-        if depth_path.has_background
-            && depth_path.path_length > LUMINANCE_EPSILON
-            && optical_depth < TRANSMISSION_OPAQUE_OPTICAL_DEPTH {
+        if depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON {
             let depth_debug = camera_depth_debug_from_path(in, normal, depth_path);
             let use_refraction = depth_debug.refracted_sample_valid;
-            let background_uv = select(
-                depth_debug.screen_uv,
-                depth_debug.refracted_uv,
+            let water_path = select(
+                depth_debug.path_length,
+                depth_debug.refracted_path_length,
                 use_refraction,
             );
-            let scene_colour = opaque_background(background_uv);
-            let lit_scene = illuminate_bed(scene_colour, in, medium, primary);
-            let alpha = 1.0 - exp(-extinction * depth_debug.path_length);
-            body = mix(lit_scene, scatter_colour, alpha);
+            // Gate the accepted path, not the original pixel: refraction may
+            // reveal a shallower bed across a depth discontinuity.
+            if minimum_extinction * water_path < TRANSMISSION_OPAQUE_OPTICAL_DEPTH {
+                let background_uv = select(
+                    depth_debug.screen_uv,
+                    depth_debug.refracted_uv,
+                    use_refraction,
+                );
+                let scene_colour = opaque_background(background_uv);
+                let lit_scene = illuminate_bed(scene_colour, in, medium, primary);
+                let alpha = 1.0 - exp(-extinction * water_path);
+                body = mix(lit_scene, scatter_colour, alpha);
+            }
         }
         // A clear depth prepass has no transmissive background. Preserve the
-        // deep-water body there. Once all channels transmit <= 2^-10, use the same
-        // scatter endpoint without a refracted depth or opaque-colour sample.
+        // deep-water body there. Opaque accepted paths skip the colour sample.
     }
     return TransmissionState(body, vec4(0.0), false);
 }
