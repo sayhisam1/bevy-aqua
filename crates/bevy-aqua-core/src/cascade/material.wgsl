@@ -278,7 +278,7 @@ fn shade_environment_and_sun(
         near.lighting_normal,
         body_lighting.environment_roughness,
     );
-    let planar = sample_planar_reflection(world_position, surface_level, near.lighting_normal);
+    let planar = sample_planar_reflection(world_position, surface_level, near.lighting_normal, body_lighting.environment_roughness);
     reflected_radiance = mix(reflected_radiance, planar.color, planar.weight);
 
     // Crest `OceanReflection.hlsl::ApplyReflectionSky`: the directional light

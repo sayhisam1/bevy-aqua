@@ -133,7 +133,7 @@ fn far_field_water(
         lighting_normal,
         perceptual_roughness,
     );
-    let planar = sample_planar_reflection(world_position.xyz, surface_level, lighting_normal);
+    let planar = sample_planar_reflection(world_position.xyz, surface_level, lighting_normal, perceptual_roughness);
     reflected_radiance = mix(reflected_radiance, planar.color, planar.weight);
     if lights.n_directional_lights > 0u {
         let light = lights.directional_lights[0u];

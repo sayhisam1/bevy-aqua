@@ -250,10 +250,10 @@ fn ensure_slots(
                     .get_mut(&slot.raw)
                     .expect("raw mirror image")
                     .resize(extent);
-                images
+                // Resize must regenerate the mip count, not only the extent.
+                *images
                     .get_mut(&slot.image)
-                    .expect("mirror image existence checked above")
-                    .resize(extent);
+                    .expect("mirror image existence checked above") = reflection_mip_image(size);
             }
             mirrors.size = size;
         }
@@ -266,7 +266,7 @@ fn ensure_slots(
     }
     mirrors.size = size;
     for _ in 0..VIEW_LIMIT {
-        let image = images.add(reflection_image(size));
+        let image = images.add(reflection_mip_image(size));
         let raw = images.add(reflection_image(size));
         let entity = commands
             .spawn((
@@ -351,8 +351,7 @@ fn reflection_image(size: UVec2) -> Image {
         TextureFormat::Rgba16Float,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
-    image.texture_descriptor.usage |=
-        TextureUsages::RENDER_ATTACHMENT | TextureUsages::STORAGE_BINDING;
+    image.texture_descriptor.usage |= TextureUsages::RENDER_ATTACHMENT;
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         mag_filter: ImageFilterMode::Linear,
         min_filter: ImageFilterMode::Linear,
@@ -361,9 +360,55 @@ fn reflection_image(size: UVec2) -> Image {
     image
 }
 
+// The camera renders only to the single-level raw image. Water samples this
+// separate full-chain image; compute and clear use explicit one-level views.
+fn reflection_mip_image(size: UVec2) -> Image {
+    let mut image = reflection_image(size);
+    image.texture_descriptor.mip_level_count = size.x.max(size.y).max(1).ilog2() + 1;
+    image.texture_descriptor.usage |= TextureUsages::STORAGE_BINDING;
+    image.texture_view_descriptor = None; // Default sampled view spans ALL levels.
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        mipmap_filter: ImageFilterMode::Linear,
+        ..default()
+    });
+    image
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reflection_mip_descriptors_cover_odd_skinny_and_resized_targets() {
+        for (size, levels) in [
+            (UVec2::ONE, 1),
+            (UVec2::new(7, 5), 3),
+            (UVec2::new(1, 7), 3),
+            (UVec2::new(7, 1), 3),
+            (UVec2::new(1023, 687), 10),
+            (UVec2::new(1025, 687), 11),
+        ] {
+            let image = reflection_mip_image(size);
+            assert_eq!(image.texture_descriptor.mip_level_count, levels);
+            assert_eq!(image.texture_descriptor.size.width, size.x);
+            assert_eq!(image.texture_descriptor.size.height, size.y);
+            assert!(image.texture_view_descriptor.is_none());
+            assert!(image.data.is_none());
+            assert!(
+                image
+                    .texture_descriptor
+                    .usage
+                    .contains(TextureUsages::STORAGE_BINDING)
+            );
+            assert_eq!(reflection_image(size).texture_descriptor.mip_level_count, 1);
+            let ImageSampler::Descriptor(sampler) = image.sampler else {
+                panic!("explicit sampler");
+            };
+            assert_eq!(sampler.mipmap_filter, ImageFilterMode::Linear);
+        }
+    }
 
     #[test]
     fn mirror_projection_preserves_surface_uv_across_pitch() {
