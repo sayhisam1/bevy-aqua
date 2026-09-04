@@ -27,6 +27,7 @@ const GODOT_WATER_ALBEDO: vec3<f32> = vec3(
 );
 const GODOT_SSS_MODIFIER: vec3<f32> = vec3(0.9, 1.15, 0.85);
 
+// Argument order matches ggx_distribution: angular cosine first, roughness second.
 fn smith_masking_shadowing(cos_theta: f32, alpha: f32) -> f32 {
     let sine = sqrt(max(1.0 - cos_theta * cos_theta, SAFE_LENGTH_SQUARED));
     let a = cos_theta / max(alpha * sine, SAFE_LENGTH_SQUARED);
@@ -140,7 +141,7 @@ fn local_light_contribution(
             max(dot(sample.direction, -to_view), 0.0),
             surface.sss.z,
         );
-        let light_mask = smith_masking_shadowing(surface.sun.y, dot_nv);
+        let light_mask = smith_masking_shadowing(dot_nv, surface.sun.y);
         let sss_near = 0.5 * pow(dot_nv, 2.0);
         let sss_height = max(0.0, wave_height + 2.5)
             * pow(max(dot(sample.direction, -to_view), 0.0), 4.0)
@@ -167,8 +168,8 @@ fn local_light_contribution(
             sample.direction + to_view,
             lighting_normal,
         );
-        let light_mask = smith_masking_shadowing(sun_roughness, dot_nv);
-        let view_mask = smith_masking_shadowing(sun_roughness, max(dot_nl, 2e-5));
+        let light_mask = smith_masking_shadowing(dot_nv, sun_roughness);
+        let view_mask = smith_masking_shadowing(max(dot_nl, 2e-5), sun_roughness);
         let distribution = ggx_distribution(
             clamp(dot(lighting_normal, halfway), 0.0, 1.0),
             sun_roughness,
