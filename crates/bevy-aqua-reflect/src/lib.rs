@@ -1,6 +1,7 @@
 //! Mirrored scene views for Aqua water surfaces.
 
 mod camera;
+mod prepass_culling;
 mod resolve;
 
 use bevy::prelude::*;
@@ -12,6 +13,7 @@ impl Plugin for AquaReflectPlugin {
     fn build(&self, app: &mut App) {
         camera::add(app);
         resolve::add(app);
+        prepass_culling::add(app);
     }
 }
 
