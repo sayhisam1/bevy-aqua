@@ -305,7 +305,7 @@ pub struct Frame {
     fft_uniform: fft::Uniform,
     model: WaveModel,
     analytic_variance: [f32; LOD_COUNT],
-    spectral_variance: [f32; LOD_COUNT],
+    spectral_variance: [f32; 8],
     // Active FFT attenuation-bin count per cascade (1 or ATTENUATION_BINS).
     fft_bins: u32,
 }

@@ -35,11 +35,22 @@ fn unresolved_wave_roughness(
     let unresolved_wavelength = 2.0 * footprint;
     var unresolved_variance = 0.0;
     var resolved_variance = 0.0;
-    for (var band = 0u; band < 5u; band++) {
-        let maximum_wavelength = cascade_layout.cascades[band].max_wavelength;
-        let minimum_wavelength = 0.5 * maximum_wavelength;
+    let spectral = surface.reflection.x > 0.5;
+    let band_count = select(5u, 8u, spectral);
+    for (var band = 0u; band < band_count; band++) {
+        let cascade = cascade_layout.cascades[min(band, 4u)];
+        var maximum_wavelength = cascade.max_wavelength;
+        var minimum_wavelength = 0.5 * maximum_wavelength;
+        if spectral && band >= 4u {
+            let upper = cascade.texel_width * cascade.texture_res / 4.0;
+            let octaves = log2(upper / minimum_wavelength);
+            maximum_wavelength = minimum_wavelength
+                * exp2(octaves * f32(band - 3u) / 4.0);
+            minimum_wavelength *= exp2(octaves * f32(band - 4u) / 4.0);
+        }
         let unresolved_fraction = clamp(
-            log2(max(unresolved_wavelength / minimum_wavelength, 1.0)),
+            log2(max(unresolved_wavelength / minimum_wavelength, 1.0))
+                / log2(maximum_wavelength / minimum_wavelength),
             0.0,
             1.0,
         );

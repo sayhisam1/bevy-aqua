@@ -32,6 +32,7 @@ fn default_cascades() -> Vec<BinSpec> {
             BinSpec {
                 texel_width,
                 texture_res: 256.0,
+                min_wavelength: 2.0 * texel_width,
                 max_wavelength: 4.0 * texel_width,
             }
         })

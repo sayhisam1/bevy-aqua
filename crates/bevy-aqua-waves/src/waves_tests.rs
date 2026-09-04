@@ -100,6 +100,7 @@ fn fft_spectrum_density_is_rotation_invariant() {
     let spec = BinSpec {
         texel_width: cascade.texel_width,
         texture_res: cascade.texture_res,
+        min_wavelength: 0.5 * cascade.max_wavelength,
         max_wavelength: cascade.max_wavelength,
     };
     const RESOLUTION: u32 = lod::RESOLUTION;
