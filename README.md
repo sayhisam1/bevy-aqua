@@ -111,7 +111,7 @@ data; set them before the plugin starts.
 clear-fresh presets are also provided. `far_tier_start` and `far_tier_end`
 bound the reduced-cost shading transition in metres. Far shading keeps sun
 and reflections while omitting depth, foam, and sampled subsurface detail.
-`reflections` selects the default planar mirror views or the byte-compatible cubemap-only path. Mark terrain or a
+`reflections` selects the default planar mirror views or the cubemap-only path. Both use the same dielectric Fresnel response. Mark terrain or a
 scene root with `ReflectedInWater` to include it and its descendants in planar
 views. `caustics` controls the default procedural shallow-bed lighting; set it
 to `None` to skip both texture samples. Hosts can update
