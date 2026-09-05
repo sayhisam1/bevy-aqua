@@ -179,8 +179,8 @@ fn sample(@builtin(global_invocation_id) id: vec3<u32>) {
     let detail_lod = clamp(params.cascade_layout.center.z, 0.0, f32(lod_count() - 1u));
     let minimum_lod = u32(floor(detail_lod));
     let detail_alpha = fract(detail_lod);
-    var lod = select_lod(world_xz);
-    var alpha = lod_alpha(world_xz, params.cascade_layout.cascades[lod]);
+    var lod = select_lod(request.world_xz);
+    var alpha = lod_alpha(request.world_xz, params.cascade_layout.cascades[lod]);
     if lod < minimum_lod {
         lod = minimum_lod;
         alpha = detail_alpha;
