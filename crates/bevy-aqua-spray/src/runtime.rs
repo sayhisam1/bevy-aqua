@@ -96,7 +96,7 @@ pub(super) fn place_probes(
     let _ = camera;
     let limits = limits(settings.quality);
     let forward = camera_transform.forward().as_vec3();
-    let forward_xz = Vec2::new(forward.x, forward.z).normalize_or_zero();
+    let forward_xz = horizontal_heading(forward, camera_transform.right().as_vec3());
     let right_xz = Vec2::new(-forward_xz.y, forward_xz.x);
     let origin = camera_transform.translation().xz();
     for (probe, mut transform) in &mut probes {
@@ -108,6 +108,20 @@ pub(super) fn place_probes(
         let base_y = probe_base_y(xz, ocean.as_deref().map(|ocean| ocean.level), &bodies);
         transform.translation = xz.extend(base_y.unwrap_or(0.0)).xzy();
     }
+}
+
+// At near-vertical pitch the forward projection amplifies quaternion rounding.
+// Recover the unrolled yaw from right instead; roll is intentionally not removed.
+fn horizontal_heading(forward: Vec3, right: Vec3) -> Vec2 {
+    let projected = forward.xz();
+    if projected.length_squared() > 1e-6 {
+        return projected.normalize();
+    }
+    let projected_right = right.xz();
+    if projected_right.length_squared() > 1e-6 {
+        return Vec2::new(projected_right.y, -projected_right.x).normalize();
+    }
+    Vec2::NEG_Y
 }
 
 fn probe_base_y(xz: Vec2, ocean_level: Option<f32>, bodies: &ResolvedWaterBodies) -> Option<f32> {
@@ -432,5 +446,23 @@ mod tests {
         assert!(!breaking_surf(Some(2.0), 0.02, 0.06));
         assert!(breaking_surf(Some(2.0), 0.03, 0.06));
         assert!(!breaking_surf(Some(8.0), 0.5, 0.06));
+    }
+}
+
+#[cfg(test)]
+mod heading37_tests {
+    use super::*;
+    #[test]
+    fn ordinary_rotations_keep_unrolled_yaw_at_vertical_pitch() {
+        for yaw in [0.0_f32, 15.0, 45.0, 90.0, 137.0, 180.0, 270.0] {
+            for pitch in [-89.0_f32, -89.95, -89.999, -90.0, 89.999, 90.0] {
+                let rotation = Quat::from_rotation_y(yaw.to_radians())
+                    * Quat::from_rotation_x(pitch.to_radians());
+                let camera = GlobalTransform::from(Transform::from_rotation(rotation));
+                let actual = horizontal_heading(camera.forward().as_vec3(), camera.right().as_vec3());
+                let expected = (Quat::from_rotation_y(yaw.to_radians()) * Vec3::NEG_Z).xz().normalize();
+                assert!(actual.distance(expected) < 0.001, "yaw={yaw} pitch={pitch} actual={actual:?} expected={expected:?}");
+            }
+        }
     }
 }
