@@ -4,18 +4,6 @@
 
 #import aqua::cascade::{bed_height, cascade_layout, caustics_sampler, caustics_texture, surface}
 
-// Caustic UVs use undisplaced XZ. Keep their footprint separate from the
-// displaced-world cache used by other effects; initialize before control flow.
-var<private> caustic_xz_footprint: f32;
-
-fn set_caustic_xz_footprint(value: f32) {
-    caustic_xz_footprint = max(value, 0.0);
-}
-
-fn caustic_screen_xz_footprint() -> f32 {
-    return caustic_xz_footprint;
-}
-
 // Decoded "no bed data" depth: matches a cleared full-depth capture texel.
 
 const NO_BED_DEPTH: f32 = 256.0;
@@ -82,6 +70,7 @@ fn caustic_bed_radiance(
     scene_colour: vec3<f32>,
     world_xz: vec2<f32>,
     water_depth: f32,
+    receiver_footprint: f32,
     time: f32,
     sun_direction: vec3<f32>,
     sun_unexposed_radiance: vec3<f32>,
@@ -101,9 +90,8 @@ fn caustic_bed_radiance(
     // Incommensurate scale and directions prevent the two layers from locking.
     let uv_a = world_xz / scale + vec2(scroll, 0.63 * scroll);
     let uv_b = world_xz * 1.37 / scale + vec2(-0.71 * scroll, 0.43 * scroll);
-    // Cached before fragment control flow, in the same undisplaced XZ as UVs.
-    // Scalar isotropic footprint, not an anisotropic/projected-bed filter.
-    let texels_per_pixel = caustic_screen_xz_footprint()
+    // Explicit receiver-XZ finite differences; caustic-only isotropic LOD.
+    let texels_per_pixel = receiver_footprint
         * f32(textureDimensions(caustics_texture, 0).x) / scale;
     let maximum_lod = f32(textureNumLevels(caustics_texture) - 1u);
     let lod_a = clamp(log2(max(texels_per_pixel, 1.0)), 0.0, maximum_lod);
@@ -125,7 +113,7 @@ fn caustic_bed_radiance(
     );
     // Keep the existing horizontal-surface incident-flux weight in air.
     // Only the underwater attenuation distance uses Snell's transmitted angle.
-    // This is a flat-interface / heightmap-depth surrogate, not a bed ray hit.
+    // Flat-interface incoming path surrogate, not a traced sun-to-receiver ray.
     // Outgoing radiance receives camera-path attenuation after this function.
     let bed_incidence = max(sun_direction.y, 0.0);
     let cos_incident = clamp(bed_incidence, 0.0, 1.0);

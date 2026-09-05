@@ -130,6 +130,21 @@ applications; it is not inherited from a library's manifest.
 to `None` to skip both texture samples. Hosts can update
 `CausticsSunVisibility` to fold cloud-shadow coverage into the direct sun.
 
+Caustic patterns are anchored to the opaque receiver selected by transmission,
+including accepted refraction or its raw fallback. The receiver must be submerged
+in the transmitting body; its depth uses that body's local water level. Missing,
+exposed, and cross-body receivers omit the caustic contribution.
+
+Mip selection uses four neighboring depth samples after caustic admission. These
+hold the central refraction offset fixed, rather than replaying neighboring
+normals and refraction acceptance. A neighbor view-depth jump above
+`max(0.05 m, 1% of receiver view depth)` suppresses the contribution. This
+heuristic can reject steep continuous surfaces and miss small discontinuities;
+it is not a surface-identity test or exact refracted filtering. Sun/shadow
+selection remains at the water fragment. The pattern and incoming attenuation
+are still flat-interface surrogates, not traced sun-to-receiver caustics.
+Disabling caustics also skips these four neighbor reads.
+
 ### Terrain bed
 
 Insert a `BedHeightMap` before `AquaPlugin`. Its single-channel image stores

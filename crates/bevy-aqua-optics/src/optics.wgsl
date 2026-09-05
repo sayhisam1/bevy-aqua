@@ -8,7 +8,7 @@
     mesh_view_bindings::{globals, lights, view},
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
-#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, invocation_extinction, invocation_scatter_scale, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, surface}
+#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, field_params, sample_field_level, invocation_extinction, invocation_scatter_scale, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, surface}
 #import aqua::waves::displace::{WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, detail_normal_sample}
 #import aqua::foam::shade::{sample_foam_density}
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
@@ -206,6 +206,7 @@ fn empty_camera_depth_path() -> CameraDepthPath {
     result.path_length = 0.0;
     result.screen_uv = vec2(0.0);
     result.scene_z = 0.0;
+    result.receiver_world = vec3(0.0);
     result.has_background = false;
     return result;
 }
@@ -226,6 +227,7 @@ fn camera_depth_path(in: SurfaceVertexOutput) -> CameraDepthPath {
         let background = camera_view_position(result.screen_uv, scene_raw_depth);
         let water = (view.view_from_world * in.world_position).xyz;
         result.scene_z = max(-background.z, 0.0);
+        result.receiver_world = (view.world_from_view * vec4(background, 1.0)).xyz;
         // Axial Z separation is shorter than the ray away from screen centre.
         // Euclidean view-space distance also works for orthographic cameras.
         if background.z < water.z {
@@ -249,6 +251,8 @@ fn camera_depth_debug_from_path(
     result.refracted_path_length = path.path_length;
     result.screen_uv = path.screen_uv;
     result.refracted_uv = path.screen_uv;
+    result.raw_receiver_world = path.receiver_world;
+    result.refracted_receiver_world = path.receiver_world;
     result.refracted_sample_valid = false;
     result.has_background = path.has_background;
 #ifdef DEPTH_PREPASS
@@ -271,6 +275,7 @@ fn camera_depth_debug_from_path(
         let background = camera_view_position(result.refracted_uv, refracted_raw_depth);
         let water = (view.view_from_world * in.world_position).xyz;
         result.refracted_path_length = length(background - water);
+        result.refracted_receiver_world = (view.world_from_view * vec4(background, 1.0)).xyz;
     }
 #endif
     return result;
@@ -374,24 +379,105 @@ fn sample_water_medium(
     );
 }
 
+// PROTOTYPE A: frozen selected refraction offset, NOT neighbor acceptance replay.
+// Negative footprint means omit caustics, never force a tiny/zero LOD.
+fn receiver_caustic_footprint(
+    in: SurfaceVertexOutput,
+    background_uv: vec2<f32>,
+    receiver_world: vec3<f32>,
+    use_refraction: bool,
+) -> f32 {
+#ifdef DEPTH_PREPASS
+    // Raw reconstruction uses viewport size; existing refracted addressing
+    // uses size-1. Preserve each convention, including viewport origin.
+    let span = select(view.viewport.zw, view.viewport.zw - vec2(1.0), use_refraction);
+    if any(span <= vec2(1.0)) { return -1.0; }
+    let step_uv = vec2(1.0) / span;
+    // Do not differentiate a clamped UV or load across a viewport boundary.
+    if any(background_uv <= step_uv) || any(background_uv >= vec2(1.0) - step_uv) {
+        return -1.0;
+    }
+    let center_view = (view.view_from_world * vec4(receiver_world, 1.0)).xyz;
+    if !(all(abs(center_view) < vec3(1e20))) { return -1.0; }
+    // Deliberately conservative experimental edge threshold in view metres.
+    // Smooth steep slopes may be rejected too. Small discontinuities can pass;
+    // this is not a surface-ID test and needs silhouette validation.
+    let maximum_z_jump = max(0.05, abs(center_view.z) * 0.01);
+    var footprint = 0.0;
+    for (var i = 0u; i < 4u; i++) {
+        var offset = vec2(1.0, 0.0);
+        if i == 1u { offset = vec2(-1.0, 0.0); }
+        if i == 2u { offset = vec2(0.0, 1.0); }
+        if i == 3u { offset = vec2(0.0, -1.0); }
+        let uv = background_uv + offset * step_uv;
+        let pixel = uv * span + view.viewport.xy;
+        let raw_depth = prepass_utils::prepass_depth(vec4(pixel, in.position.zw), 0u);
+        if !(raw_depth > 0.0 && raw_depth < in.position.z) { return -1.0; }
+        let neighbor_view = camera_view_position(uv, raw_depth);
+        if !(all(abs(neighbor_view) < vec3(1e20))) { return -1.0; }
+        if abs(neighbor_view.z - center_view.z) > maximum_z_jump { return -1.0; }
+        let neighbor_world = (view.world_from_view * vec4(neighbor_view, 1.0)).xyz;
+        if !(all(abs(neighbor_world) < vec3(1e20))) { return -1.0; }
+        footprint = max(footprint, length(neighbor_world.xz - receiver_world.xz));
+    }
+    // Degenerate footprint is invalid, rather than a spuriously sharp mip.
+    if !(footprint > 0.0 && footprint < 1e20) { return -1.0; }
+    return footprint;
+#else
+    return -1.0;
+#endif
+}
+
 fn illuminate_bed(
     scene_colour: vec3<f32>,
     in: SurfaceVertexOutput,
-    medium: MediumState,
     primary: PrimaryLightState,
+    depth: CameraDepthDebug,
+    use_refraction: bool,
+    background_uv: vec2<f32>,
+    source_slot: u32,
 ) -> vec3<f32> {
+    // Shared by beauty and the existing Beer-Lambert/sea-floor caustic lanes.
+    // No-prepass defaults fail here; transmission-only diagnostics bypass us.
+    if surface.caustics.x * surface.sea_floor.w <= 0.0 || !depth.has_background {
+        return scene_colour;
+    }
+    let selected_path = select(depth.path_length, depth.refracted_path_length, use_refraction);
+    if !(selected_path > LUMINANCE_EPSILON) { return scene_colour; }
+    let receiver = select(depth.raw_receiver_world, depth.refracted_receiver_world, use_refraction);
+    if !(all(abs(receiver) < vec3(1e20))) { return scene_colour; }
+    var receiver_slot = 0u;
+    var level = cascade_layout.bed_range.z;
+    if field_params.info.x > 0.5 {
+        // sample_field_level uses a nearest categorical slot, filtered level.
+        let field = sample_field_level(receiver.xz);
+        receiver_slot = u32(field.y + 0.5);
+        if receiver_slot != source_slot { return scene_colour; }
+        if receiver_slot != 0u { level = field.x; }
+    } else if source_slot != 0u {
+        return scene_colour;
+    }
+    let water_depth = level - receiver.y;
+    if !(water_depth > LUMINANCE_EPSILON && water_depth < surface.caustics.w) {
+        return scene_colour;
+    }
+    // Keep shadows/sun selection at the water fragment, as before.
     let incident = strongest_incident_directional_light(
         in,
         vec3(0.0, 1.0, 0.0),
         primary.view_z,
     );
-    if !incident.valid {
+    if !incident.valid || incident.direction.y <= 0.0 || incident.shadow <= 0.0 {
         return scene_colour;
     }
+    // Only enabled, submerged, same-body, sun-admitted caustics pay neighbors.
+    let footprint = receiver_caustic_footprint(in, background_uv, receiver, use_refraction);
+    if footprint < 0.0 { return scene_colour; }
     return caustic_bed_radiance(
         scene_colour,
-        in.undisplaced_xz,
-        medium.water_depth,
+        receiver.xz,
+        water_depth,
+        footprint,
         globals.time,
         incident.direction,
         incident.color,
@@ -415,6 +501,7 @@ fn beauty_transmission(
     medium: MediumState,
     primary: PrimaryLightState,
     depth_path: CameraDepthPath,
+    source_slot: u32,
 ) -> vec3<f32> {
     if !(depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON) {
         return scatter_colour;
@@ -441,7 +528,10 @@ fn beauty_transmission(
         use_refraction,
     );
     let scene_colour = opaque_background(background_uv);
-    let lit_scene = illuminate_bed(scene_colour, in, medium, primary);
+    let lit_scene = illuminate_bed(
+        scene_colour, in, primary, depth_debug, use_refraction,
+        background_uv, source_slot,
+    );
     let alpha = 1.0 - exp(-extinction * water_path);
     return mix(lit_scene, scatter_colour, alpha);
 }
@@ -477,6 +567,7 @@ fn resolve_transmission(
     foam: FoamState,
     primary: PrimaryLightState,
     mode: u32,
+    source_slot: u32,
 ) -> TransmissionState {
     let is_diagnostic = mode >= DEBUG_MODE_WATER_PATH && mode <= DEBUG_MODE_SEA_FLOOR;
     if mode != DEBUG_MODE_BEAUTY && !is_diagnostic {
@@ -489,7 +580,9 @@ fn resolve_transmission(
         shared_depth_path = camera_depth_path(in);
     }
     if mode == DEBUG_MODE_BEAUTY {
-        let body = beauty_transmission(in, normal, scatter_colour, medium, primary, shared_depth_path);
+        let body = beauty_transmission(
+            in, normal, scatter_colour, medium, primary, shared_depth_path, source_slot,
+        );
         return TransmissionState(body, vec4(0.0), false);
     }
 
@@ -525,7 +618,10 @@ fn resolve_transmission(
 
     // Crest `OceanEmission.hlsl:254-266`: per-channel Beer-Lambert fog.
     // The colour ramp emerges from extinction; there is no authored ramp.
-    let lit_scene = illuminate_bed(scene_colour, in, medium, primary);
+    let lit_scene = illuminate_bed(
+        scene_colour, in, primary, depth_debug, use_refraction,
+        background_uv, source_slot,
+    );
     let water_path = select(
         depth_debug.path_length,
         depth_debug.refracted_path_length,
@@ -535,6 +631,7 @@ fn resolve_transmission(
     body = mix(lit_scene, scatter_colour, alpha);
     if mode == DEBUG_MODE_BEER_LAMBERT {
         return TransmissionState(body, vec4(body, 1.0), true);
+    }
     }
     return TransmissionState(body, vec4(0.0), false);
 }

@@ -78,23 +78,23 @@ fn caustic_mips_never_feed_rounded_upload_values_into_next_level() {
 }
 
 #[test]
-fn caustic_lod_uses_actual_uv_coordinates_and_both_layer_scales() {
+fn caustic_lod_uses_receiver_coordinates_and_explicit_footprint() {
     let shore = include_str!("water.wgsl");
     let material = include_str!("../../bevy-aqua-core/src/cascade/material.wgsl");
     let optics = include_str!("../../bevy-aqua-optics/src/optics.wgsl");
     let cascade = include_str!("../../bevy-aqua-core/src/cascade.rs");
-    let fragment = material.split("fn fragment(").nth(1).unwrap();
-    let cached = "set_caustic_xz_footprint(max(\n        length(dpdx(in.undisplaced_xz)),\n        length(dpdy(in.undisplaced_xz)),\n    ));";
-    assert!(fragment.contains("set_xz_footprint(max(\n        length(dpdx(in.world_position.xz)),\n        length(dpdy(in.world_position.xz)),\n    ));"));
-    assert!(fragment.contains(cached));
-    assert!(fragment.find(cached).unwrap() < fragment.find("if ").unwrap());
-    assert!(optics.contains(
-        "return caustic_bed_radiance(\n        scene_colour,\n        in.undisplaced_xz,"
-    ));
+    // The lighting footprint still exists; the obsolete caustic private cache does not.
+    assert!(material.contains("set_xz_footprint(max(\n        length(dpdx(in.world_position.xz)),\n        length(dpdy(in.world_position.xz)),\n    ));"));
+    for source in [shore, material, optics] {
+        assert!(!source.contains("set_caustic_xz_footprint"));
+        assert!(!source.contains("caustic_screen_xz_footprint"));
+    }
+    assert!(optics.contains("return caustic_bed_radiance(\n        scene_colour,\n        receiver.xz,\n        water_depth,\n        footprint,"));
+    assert!(shore.contains("receiver_footprint: f32,"));
     assert!(shore.contains("let scale = surface.caustics.y * CAUSTIC_CELLS_PER_TILE;"));
     assert!(shore.contains("let uv_a = world_xz / scale"));
     assert!(shore.contains("let uv_b = world_xz * 1.37 / scale"));
-    assert!(shore.contains("let texels_per_pixel = caustic_screen_xz_footprint()\n        * f32(textureDimensions(caustics_texture, 0).x) / scale;"));
+    assert!(shore.contains("let texels_per_pixel = receiver_footprint\n        * f32(textureDimensions(caustics_texture, 0).x) / scale;"));
     assert!(shore.contains("let maximum_lod = f32(textureNumLevels(caustics_texture) - 1u);"));
     assert!(
         shore.contains("let lod_a = clamp(log2(max(texels_per_pixel, 1.0)), 0.0, maximum_lod);")
