@@ -181,3 +181,23 @@ fn unsampled_surface_starts_explicitly_invalid() {
     assert_eq!(surface.displacement, Vec3::ZERO);
     assert_eq!(surface.normal, Vec3::Y);
 }
+
+// Structural guard only; this does not execute the GPU query pipeline.
+#[test]
+fn ocean_query_ownership_is_world_anchored_and_sampling_remains_advected() {
+    let shader = include_str!("wave_query.wgsl");
+    assert!(shader.contains("var lod = select_lod(request.world_xz);"));
+    assert!(
+        shader.contains(
+            "var alpha = lod_alpha(request.world_xz, params.cascade_layout.cascades[lod]);"
+        )
+    );
+    assert!(shader.contains("let world_xz = request.world_xz - params.flow.xy * params.time.x;"));
+    assert!(shader.contains("let displacement = sample_displacement(world_xz, lod, alpha);"));
+    assert!(shader.contains("world_xz + vec2(texel_width, 0.0)"));
+    assert!(shader.contains("world_xz + vec2(0.0, texel_width)"));
+    assert!(shader.contains("if request.flow.w > 0.0"));
+    assert!(shader.contains("river_surface(request.world_xz, request)"));
+    assert!(shader.contains("if request.kind > 0.5"));
+    assert!(shader.contains("alpha = max(alpha, detail_alpha);"));
+}
