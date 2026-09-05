@@ -121,6 +121,9 @@ pub fn bake(bodies: &[ResolvedWaterBody], has_ocean: bool) -> (FieldParams, Imag
     let texel = (size.max_element() / MAX_FIELD_SIDE as f32).max(MIN_TEXEL);
     let width = ((size.x / texel).ceil() as u32).clamp(MIN_FIELD_EXTENT, MAX_FIELD_SIDE);
     let height = ((size.y / texel).ceil() as u32).clamp(MIN_FIELD_EXTENT, MAX_FIELD_SIDE);
+    // Sampling maps the entire image onto this region. Describe the rounded
+    // grid so its world-space texel centres match those generated below.
+    let size = Vec2::new(width as f32, height as f32) * texel;
     params.region = minimum.extend(size.x).extend(size.y);
     params.meta.x = bodies.len() as f32;
     params.meta.z = texel;

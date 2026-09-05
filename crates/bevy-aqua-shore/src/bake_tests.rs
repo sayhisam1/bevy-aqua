@@ -182,3 +182,68 @@ fn boundary43_real_bake_preserves_square_extent_and_corner_ownership() {
     assert!(Vec2::splat(450.0).length() - read(28) > 512.0);
     assert!(Vec2::splat(353.0).length() < 512.0);
 }
+
+#[test]
+fn baked_region_matches_rounded_texture_grid() {
+    // Fractional and exact extents, including an elongated multi-body region.
+    for (radius, offset) in [(10.05, 0.0), (10.0, 0.0), (10.05, 3.13)] {
+        let shape = WaterShape::Circle { radius };
+        let bodies: Vec<_> = [0.0, offset]
+            .into_iter()
+            .enumerate()
+            .map(|(index, x)| {
+                ResolvedWaterBody::resolve(
+                    Entity::from_bits(index as u64 + 1),
+                    &shape,
+                    None,
+                    &GlobalTransform::from(Transform::from_xyz(x, 0.0, 0.0)),
+                )
+                .unwrap()
+            })
+            .collect();
+        let (params, image) = bake(&bodies, false);
+        let dimensions = image.texture_descriptor.size;
+        let extent = Vec2::new(dimensions.width as f32, dimensions.height as f32) * params.meta.z;
+        assert_eq!(
+            params.region.zw(),
+            extent,
+            "exported bounds must describe the baked grid"
+        );
+    }
+}
+
+#[test]
+fn baked_slots_match_published_world_texel_centres() {
+    let body = ResolvedWaterBody::resolve(
+        Entity::from_bits(1),
+        &WaterShape::Circle { radius: 10.05 },
+        None,
+        &GlobalTransform::IDENTITY,
+    )
+    .unwrap();
+    let (params, image) = bake(std::slice::from_ref(&body), false);
+    let dimensions = image.texture_descriptor.size;
+    for row in 0..dimensions.height {
+        for column in 0..dimensions.width {
+            let uv = Vec2::new(
+                (column as f32 + 0.5) / dimensions.width as f32,
+                (row as f32 + 0.5) / dimensions.height as f32,
+            );
+            let point = params.region.xy() + uv * params.region.zw();
+            let slot = read_texel(
+                &image,
+                column,
+                row,
+                dimensions.width,
+                dimensions.height,
+                0,
+                4,
+            )[1];
+            assert_eq!(
+                slot != 0.0,
+                body.contains(point),
+                "world={point:?}, texel=({column},{row})"
+            );
+        }
+    }
+}
