@@ -62,7 +62,7 @@ impl Plugin for AquaShorePlugin {
     }
 }
 
-// R8 512² retains narrow filtered ridges in 256 KiB.
+// R8 512² plus all area-average mips: 349,525 bytes (about 341 KiB).
 const CAUSTIC_TEXTURE_SIZE: u32 = 512;
 // Sixteen cells delay tile repetition without increasing the neighbour search.
 const CAUSTIC_CELL_COUNT: i32 = 16;
@@ -97,6 +97,38 @@ fn caustic_ridge(point: Vec2) -> f32 {
     (1.0 - (nearest[1] - nearest[0]) / CAUSTIC_RIDGE_WIDTH).clamp(0.0, 1.0)
 }
 
+// Pack largest-to-smallest R8 levels. Average the unquantized values from
+// the previous level, never its rounded upload bytes. For this power-of-two
+// texture, f64 represents every mean of the original R8 texels exactly.
+fn caustic_mip_chain(base: &[u8], size: u32) -> Vec<u8> {
+    assert!(size.is_power_of_two());
+    assert_eq!(base.len(), (size * size) as usize);
+    let total = (0..=size.ilog2())
+        .map(|level| ((size >> level) * (size >> level)) as usize)
+        .sum();
+    let mut packed = Vec::with_capacity(total);
+    packed.extend_from_slice(base);
+    let mut previous: Vec<f64> = base.iter().map(|&value| f64::from(value)).collect();
+    let mut width = size as usize;
+    while width > 1 {
+        let next_width = width / 2;
+        let mut next = Vec::with_capacity(next_width * next_width);
+        for y in 0..next_width {
+            for x in 0..next_width {
+                let i = 2 * y * width + 2 * x;
+                let mean =
+                    (previous[i] + previous[i + 1] + previous[i + width] + previous[i + width + 1])
+                        * 0.25;
+                next.push(mean);
+                packed.push(mean.round() as u8);
+            }
+        }
+        previous = next;
+        width = next_width;
+    }
+    packed
+}
+
 fn make_caustics_texture() -> Image {
     let mut pixels = Vec::with_capacity((CAUSTIC_TEXTURE_SIZE * CAUSTIC_TEXTURE_SIZE) as usize);
     for y in 0..CAUSTIC_TEXTURE_SIZE {
@@ -107,6 +139,7 @@ fn make_caustics_texture() -> Image {
             pixels.push((ridge * ridge * 255.0).round() as u8);
         }
     }
+    let mip_pixels = caustic_mip_chain(&pixels, CAUSTIC_TEXTURE_SIZE);
     let mut image = Image::new(
         Extent3d {
             width: CAUSTIC_TEXTURE_SIZE,
@@ -118,11 +151,14 @@ fn make_caustics_texture() -> Image {
         TextureFormat::R8Unorm,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
+    image.texture_descriptor.mip_level_count = CAUSTIC_TEXTURE_SIZE.ilog2() + 1;
+    image.data = Some(mip_pixels);
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::Repeat,
         address_mode_v: ImageAddressMode::Repeat,
         mag_filter: ImageFilterMode::Linear,
         min_filter: ImageFilterMode::Linear,
+        mipmap_filter: ImageFilterMode::Linear,
         ..default()
     });
     image
@@ -193,3 +229,6 @@ mod tests;
 
 #[cfg(test)]
 mod caustic_refraction_tests;
+
+#[cfg(test)]
+mod caustic_filter_tests;

@@ -4,6 +4,18 @@
 
 #import aqua::cascade::{bed_height, cascade_layout, caustics_sampler, caustics_texture, surface}
 
+// Caustic UVs use undisplaced XZ. Keep their footprint separate from the
+// displaced-world cache used by other effects; initialize before control flow.
+var<private> caustic_xz_footprint: f32;
+
+fn set_caustic_xz_footprint(value: f32) {
+    caustic_xz_footprint = max(value, 0.0);
+}
+
+fn caustic_screen_xz_footprint() -> f32 {
+    return caustic_xz_footprint;
+}
+
 // Decoded "no bed data" depth: matches a cleared full-depth capture texel.
 
 const NO_BED_DEPTH: f32 = 256.0;
@@ -89,8 +101,16 @@ fn caustic_bed_radiance(
     // Incommensurate scale and directions prevent the two layers from locking.
     let uv_a = world_xz / scale + vec2(scroll, 0.63 * scroll);
     let uv_b = world_xz * 1.37 / scale + vec2(-0.71 * scroll, 0.43 * scroll);
-    let a = textureSampleLevel(caustics_texture, caustics_sampler, uv_a, 0.0).r;
-    let b = textureSampleLevel(caustics_texture, caustics_sampler, uv_b, 0.0).r;
+    // Cached before fragment control flow, in the same undisplaced XZ as UVs.
+    // Scalar isotropic footprint, not an anisotropic/projected-bed filter.
+    let texels_per_pixel = caustic_screen_xz_footprint()
+        * f32(textureDimensions(caustics_texture, 0).x) / scale;
+    let maximum_lod = f32(textureNumLevels(caustics_texture) - 1u);
+    let lod_a = clamp(log2(max(texels_per_pixel, 1.0)), 0.0, maximum_lod);
+    let lod_b = clamp(log2(max(texels_per_pixel * 1.37, 1.0)), 0.0, maximum_lod);
+    let a = textureSampleLevel(caustics_texture, caustics_sampler, uv_a, lod_a).r;
+    let b = textureSampleLevel(caustics_texture, caustics_sampler, uv_b, lod_b).r;
+    // Product of filtered layers is not the exact filtered product.
     let pattern = CAUSTIC_FOCUS_GAIN * a * b;
     let depth_gate = 1.0 - smoothstep(0.0, maximum_depth, water_depth);
     let direct_lux = dot(
