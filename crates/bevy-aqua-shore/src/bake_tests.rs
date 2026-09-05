@@ -129,3 +129,56 @@ fn f32_to_f16_bits_matches_known_values() {
     // Tiny magnitudes flush toward zero.
     assert_eq!(f32_to_f16_bits(1.0e-9), 0x0000);
 }
+
+#[test]
+fn boundary43_real_bake_preserves_square_extent_and_corner_ownership() {
+    let shape = WaterShape::Polygon {
+        points: vec![
+            Vec2::new(-100.0, -100.0),
+            Vec2::new(100.0, -100.0),
+            Vec2::new(100.0, 100.0),
+            Vec2::new(-100.0, 100.0),
+        ],
+    };
+    let body = ResolvedWaterBody::resolve(
+        Entity::from_bits(1),
+        &shape,
+        None,
+        &GlobalTransform::from(Transform::from_xyz(450.0, 0.0, 450.0)),
+    )
+    .unwrap();
+    assert_eq!(body.aabb(), (Vec2::splat(348.0), Vec2::splat(552.0)));
+    assert_eq!(body.extent(), (Vec2::splat(450.0), 102.0));
+    let (params, maps) = bake(&[body], false);
+    assert_eq!(params.meta.x, 1.0);
+    assert_eq!(params.meta.y, 0.0);
+    // Read the actual uploaded BodyParams extent, not a separately built value.
+    let mut bytes = Vec::new();
+    bevy::render::render_resource::encase::UniformBuffer::new(&mut bytes)
+        .write(&params.bodies[0])
+        .unwrap();
+    let read = |offset| f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    assert_eq!(
+        [read(16), read(20), read(24), read(28)],
+        [450.0, 450.0, 0.0, 102.0]
+    );
+    let size = params.region.zw();
+    let width = maps.texture_descriptor.size.width;
+    let height = maps.texture_descriptor.size.height;
+    for point in [Vec2::splat(353.0), Vec2::splat(360.0), Vec2::splat(450.0)] {
+        let uv = (point - params.region.xy()) / size;
+        let texel = read_texel(
+            &maps,
+            (uv.x * width as f32) as u32,
+            (uv.y * height as f32) as u32,
+            width,
+            height,
+            0,
+            4,
+        );
+        assert_eq!(texel[0], 0.0, "explicit water level");
+        assert_eq!(texel[1], 1.0, "corner interior has bounded owner");
+    }
+    assert!(Vec2::splat(450.0).length() - read(28) > 512.0);
+    assert!(Vec2::splat(353.0).length() < 512.0);
+}

@@ -187,3 +187,81 @@ fn default_sun_floor_preserves_wave_roughness_and_body_inheritance() {
     assert_eq!(WaterOptics::CLEAR_FRESH.sun_roughness, 0.1);
     assert!(WaterOptics::DEEP_OCEAN.sun_roughness < 0.0);
 }
+
+// boundary43: reference arithmetic plus actual resolved bounds and ABI wiring.
+// GPU execution of the composed shader is covered by the temporary native fixture.
+fn boundary43_distance(eye: Vec2, params: BodyParams) -> f32 {
+    ((eye - params.extent.xy()).abs() - Vec2::splat(params.extent.w))
+        .max(Vec2::ZERO)
+        .length()
+}
+
+#[test]
+fn boundary43_square_distance_and_shader_contract() {
+    let shader = include_str!("cascade/material.wgsl");
+    assert!(shader.contains("let distance_to_extent = length(max(\n            abs(view.world_position.xz - params.extent.xy) - vec2(params.extent.w),\n            vec2(0.0),\n        ));"));
+    assert!(shader.contains("if distance_to_extent > surface.far_tier.y {\n            discard;"));
+    let begin = shader.find("let bounded = slot > 0u;").unwrap();
+    let owner = shader[begin..]
+        .find("let params = owning_body(slot);")
+        .unwrap()
+        + begin;
+    let gate = shader[owner..].find("if bounded {").unwrap() + owner;
+    let distance = shader.find("let distance_to_extent =").unwrap();
+    assert!(gate < distance);
+    for (center, half, eye, expected, cull) in [
+        (Vec2::splat(450.0), 100.0, Vec2::ZERO, 494.97475, false),
+        (Vec2::splat(450.0), 102.0, Vec2::ZERO, 492.14633, false),
+        (Vec2::splat(600.0), 102.0, Vec2::ZERO, 704.2783, true),
+        (Vec2::new(612.0, 0.0), 100.0, Vec2::ZERO, 512.0, false),
+        (Vec2::new(613.0, 0.0), 100.0, Vec2::ZERO, 513.0, true),
+        (Vec2::splat(450.0), 100.0, Vec2::splat(450.0), 0.0, false),
+        (Vec2::splat(-450.0), 100.0, Vec2::ZERO, 494.97475, false),
+    ] {
+        let params = BodyParams::bounded(center, half, Vec2::ZERO, Vec2::ONE, false, None);
+        let distance = boundary43_distance(eye, params);
+        assert!((distance - expected).abs() < 0.001);
+        assert_eq!(distance > 512.0, cull);
+    }
+}
+
+#[test]
+fn boundary43_resolved_rectangles_yaw_nonuniform_and_shear_enclose_vertices() {
+    let points = vec![
+        Vec2::new(-100.0, -20.0),
+        Vec2::new(100.0, -20.0),
+        Vec2::new(100.0, 20.0),
+        Vec2::new(-100.0, 20.0),
+    ];
+    let shape = WaterShape::Polygon {
+        points: points.clone(),
+    };
+    let transforms = [
+        GlobalTransform::from(Transform::from_xyz(450.0, 0.0, 450.0)),
+        GlobalTransform::from(
+            Transform::from_xyz(450.0, 0.0, 450.0)
+                .with_rotation(Quat::from_rotation_y(0.71))
+                .with_scale(Vec3::new(-2.0, 1.0, 0.4)),
+        ),
+        GlobalTransform::from(bevy::math::Affine3A::from_mat3_translation(
+            Mat3::from_cols(Vec3::new(2.0, 0.0, 0.5), Vec3::Y, Vec3::new(0.7, 0.0, 0.4)),
+            Vec3::new(450.0, 0.0, 450.0),
+        )),
+    ];
+    for transform in transforms {
+        let body =
+            ResolvedWaterBody::resolve(Entity::from_bits(1), &shape, None, &transform).unwrap();
+        let (minimum, maximum) = body.aabb();
+        let (center, half) = body.extent();
+        let params = BodyParams::bounded(center, half, minimum, maximum - minimum, false, None);
+        assert_eq!(params.extent, Vec4::new(center.x, center.y, 0.0, half));
+        for point in &points {
+            let world = body.world_point(*point);
+            assert!(world.cmpge(minimum).all() && world.cmple(maximum).all());
+            assert!((world - center).abs().cmple(Vec2::splat(half)).all());
+            for eye in [Vec2::ZERO, Vec2::new(-120.0, 650.0), center] {
+                assert!(boundary43_distance(eye, params) <= eye.distance(world) + 0.001);
+            }
+        }
+    }
+}

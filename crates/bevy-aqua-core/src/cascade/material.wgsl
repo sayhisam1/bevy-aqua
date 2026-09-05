@@ -520,10 +520,12 @@ fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
     begin_invocation(bounded, params);
     set_effective_time(globals.time);
     if bounded {
-        // Bodies entirely beyond the far tier cull by extent-vs-distance.
-        let distance_to_extent = length(
-            params.extent.xy - view.world_position.xz,
-        ) - params.extent.w;
+        // extent.w is a world-axis square half-extent, not a circle radius.
+        // Distance to that enclosing square is a conservative body distance.
+        let distance_to_extent = length(max(
+            abs(view.world_position.xz - params.extent.xy) - vec2(params.extent.w),
+            vec2(0.0),
+        ));
         if distance_to_extent > surface.far_tier.y {
             discard;
         }
