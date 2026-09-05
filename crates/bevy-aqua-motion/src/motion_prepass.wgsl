@@ -125,7 +125,7 @@ fn vertex(vertex_in: Vertex) -> VertexOutput {
                 deformation.sample_xz.y,
                 1.0,
             );
-        } else if !deformation.bounded {
+        } else if !deformation.bounded && field_params.info.y >= 0.5 {
             let mode = u32(round(surface.debug.x));
             let far_diagnostic = mode == DEBUG_MODE_FAR_TIER;
             let far_tier = select(
@@ -157,7 +157,7 @@ fn vertex(vertex_in: Vertex) -> VertexOutput {
                 1.0,
             );
         }
-        // Bounded flat water intentionally retains current == previous.
+        // Flat water, including unowned support without an Ocean, stays still.
     }
     out.previous_world_position = previous_world_position;
 #endif

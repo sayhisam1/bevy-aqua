@@ -265,3 +265,20 @@ fn boundary43_resolved_rectangles_yaw_nonuniform_and_shear_enclose_vertices() {
         }
     }
 }
+
+#[test]
+fn absent_ocean_vertices_return_flat_after_rivers() {
+    let shader = include_str!("cascade/deform.wgsl");
+    let river = shader.find("    if result.river {").unwrap();
+    let flat = shader
+        .find("    if bounded || field_params.info.y < 0.5 {")
+        .expect("absent-Ocean vertices must not reach ocean deformation");
+    let ocean = shader.find("    let transitioned = select(").unwrap();
+    assert!(river < flat && flat < ocean);
+    assert!(shader[river..flat].contains("return result;"));
+    assert!(shader[flat..ocean].contains("result.wave_height = 0.0;"));
+    assert!(shader[flat..ocean].contains("return result;"));
+    // Disabling ocean displacement must not invent bounded ownership.
+    assert!(shader.contains("let bounded = slot > 0u;"));
+    assert!(shader.contains("result.bounded = bounded;"));
+}

@@ -299,3 +299,20 @@ mod tests {
         assert!(!history_is_contiguous(&changed_detail, &previous));
     }
 }
+
+#[cfg(test)]
+mod ocean_presence_tests {
+    #[test]
+    fn absent_ocean_vertices_keep_current_position_in_history() {
+        let shader = include_str!("motion_prepass.wgsl");
+        let current = shader
+            .find("var previous_world_position = out.world_position;")
+            .unwrap();
+        let river = shader.find("if deformation.river {").unwrap();
+        let ocean = shader
+            .find("else if !deformation.bounded && field_params.info.y >= 0.5 {")
+            .expect("previous ocean displacement requires an Ocean");
+        assert!(current < river && river < ocean);
+        assert!(!shader.contains("else if !deformation.bounded {"));
+    }
+}

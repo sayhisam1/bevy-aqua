@@ -127,7 +127,9 @@ fn deform_current(vertex: Vertex, time: f32) -> DeformationResult {
         return result;
     }
 
-    if bounded {
+    // Unowned support vertices must not inherit waves from an absent Ocean.
+    // River-owned vertices retain their own wave path above.
+    if bounded || field_params.info.y < 0.5 {
         let transitioned = snap_and_transition(
             world_position.xz,
             world_from_local[3].xz,
