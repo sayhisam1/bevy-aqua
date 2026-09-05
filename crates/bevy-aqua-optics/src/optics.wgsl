@@ -269,8 +269,11 @@ fn camera_depth_debug_from_path(
     let refract_offset = surface.debug.y * screen_perturbation
         * shallow_gap / max(path.scene_z, LUMINANCE_EPSILON);
     result.refracted_uv = clamp(path.screen_uv + refract_offset, vec2(0.0), vec2(1.0));
-    let refracted_pixel = result.refracted_uv * (view.viewport.zw - vec2(1.0))
-        + view.viewport.xy;
+    // Select the texel containing this continuous UV; only bound the endpoint.
+    let refracted_pixel = min(
+        result.refracted_uv * view.viewport.zw,
+        view.viewport.zw - vec2(1.0),
+    ) + view.viewport.xy;
     let refracted_position = vec4(refracted_pixel, in.position.zw);
     let refracted_raw_depth = prepass_utils::prepass_depth(refracted_position, 0u);
     result.refracted_sample_valid = refracted_raw_depth > 0.0
@@ -398,9 +401,8 @@ fn receiver_caustic_footprint(
     use_refraction: bool,
 ) -> f32 {
 #ifdef DEPTH_PREPASS
-    // Raw reconstruction uses viewport size; existing refracted addressing
-    // uses size-1. Preserve each convention, including viewport origin.
-    let span = select(view.viewport.zw, view.viewport.zw - vec2(1.0), use_refraction);
+    // Both depth lanes use viewport-size addressing: one UV step is one pixel.
+    let span = view.viewport.zw;
     if any(span <= vec2(1.0)) { return -1.0; }
     let step_uv = vec2(1.0) / span;
     // Do not differentiate a clamped UV or load across a viewport boundary.
@@ -420,7 +422,11 @@ fn receiver_caustic_footprint(
         if i == 2u { offset = vec2(0.0, 1.0); }
         if i == 3u { offset = vec2(0.0, -1.0); }
         let uv = background_uv + offset * step_uv;
-        let pixel = uv * span + view.viewport.xy;
+        let pixel = select(
+            uv * span,
+            min(uv * span, span - vec2(1.0)),
+            use_refraction,
+        ) + view.viewport.xy;
         let raw_depth = prepass_utils::prepass_depth(vec4(pixel, in.position.zw), 0u);
         if !(raw_depth > 0.0 && raw_depth < in.position.z) { return -1.0; }
         let neighbor_view = camera_view_position(uv, raw_depth);

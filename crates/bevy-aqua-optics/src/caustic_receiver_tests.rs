@@ -153,7 +153,7 @@ fn footprint_is_four_conditional_neighbors_with_max_span_and_invalid_sentinel() 
         fp,
         &[
             "#ifdef DEPTH_PREPASS",
-            "let span = select(view.viewport.zw, view.viewport.zw - vec2(1.0), use_refraction);",
+            "let span = view.viewport.zw;",
             "if any(span <= vec2(1.0)) { return -1.0; }",
             "let step_uv = vec2(1.0) / span;",
             "if any(background_uv <= step_uv) || any(background_uv >= vec2(1.0) - step_uv) {",
@@ -167,7 +167,11 @@ fn footprint_is_four_conditional_neighbors_with_max_span_and_invalid_sentinel() 
             "if i == 2u { offset = vec2(0.0, 1.0); }",
             "if i == 3u { offset = vec2(0.0, -1.0); }",
             "let uv = background_uv + offset * step_uv;",
-            "let pixel = uv * span + view.viewport.xy;",
+            "let pixel = select(",
+            "uv * span,",
+            "min(uv * span, span - vec2(1.0)),",
+            "use_refraction,",
+            ") + view.viewport.xy;",
             "let raw_depth = prepass_utils::prepass_depth(vec4(pixel, in.position.zw), 0u);",
             "if !(raw_depth > 0.0 && raw_depth < in.position.z) { return -1.0; }",
             "let neighbor_view = camera_view_position(uv, raw_depth);",
@@ -274,27 +278,116 @@ fn cpu_selection_falls_back_exactly_and_edge_threshold_is_inclusive_monotone() {
     assert!(!accepted(-1.0, 0.06)); // a smooth steep slope can fail nearby
 }
 
+// CPU references use f32 like WGSL; source guards below bind their arithmetic
+// to the shader. They do not execute GPU loads or certify caustic acceptance.
+fn refracted_depth_texel(uv: f32, size: f32, origin: f32) -> i32 {
+    ((uv * size).min(size - 1.0) + origin) as i32
+}
+
 #[test]
-fn cpu_raw_and_refracted_viewport_addressing_keep_origin_and_distinct_spans() {
-    let origin = [23.0_f32, 47.0];
-    let size = [800.0_f32, 600.0];
-    let uv = [0.25_f32, 0.5];
-    for refracted in [false, true] {
-        for axis in 0..2 {
-            let span = size[axis] - if refracted { 1.0 } else { 0.0 };
-            let center = uv[axis] * span + origin[axis];
-            for sign in [-1.0, 1.0] {
-                let neighbor = (uv[axis] + sign / span) * span + origin[axis];
-                assert!((neighbor - center - sign).abs() < 1e-4);
+fn zero_distortion_depth_texels_match_raw_centers_for_even_and_odd_viewports() {
+    // Each axis is independent; include native dimensions, odd extents, and
+    // one-texel viewports. Integer nonzero origins model viewport offsets.
+    for extent in [1, 2, 3, 7, 799, 800, 1024, 1025, 1439, 1440, 2559, 2560] {
+        let size = extent as f32;
+        for origin in [0.0_f32, 23.0, 47.0] {
+            for index in 0..extent {
+                let fragment = origin + index as f32 + 0.5;
+                let uv = (fragment - origin) / size;
+                assert_eq!(
+                    refracted_depth_texel(uv, size, origin),
+                    fragment as i32,
+                    "extent={extent}, origin={origin}, index={index}",
+                );
             }
-            assert!(
-                (center - (uv[axis] * size[axis] + origin[axis])
-                    + if refracted { uv[axis] } else { 0.0 })
-                .abs()
-                    < 1e-4
+        }
+    }
+}
+
+#[test]
+fn refracted_depth_uv_endpoints_stay_in_first_and_last_viewport_texels() {
+    for extent in [1, 2, 3, 799, 800, 1024, 1025, 1440, 2559, 2560] {
+        let size = extent as f32;
+        for origin in [0.0_f32, 23.0, 47.0] {
+            assert_eq!(refracted_depth_texel(0.0, size, origin), origin as i32);
+            assert_eq!(
+                refracted_depth_texel(1.0, size, origin),
+                origin as i32 + extent - 1,
+            );
+            // The bound must not shrink interior UVs into the previous texel.
+            let final_center = (size - 0.5) / size;
+            assert_eq!(
+                refracted_depth_texel(final_center, size, origin),
+                origin as i32 + extent - 1,
             );
         }
     }
+}
+
+#[test]
+fn footprint_neighbors_step_one_actual_texel_with_matching_raw_and_refracted_centers() {
+    for extent in [3, 4, 7, 799, 800, 1024, 1025, 1439, 1440, 2559, 2560] {
+        let size = extent as f32;
+        let step_uv = 1.0 / size;
+        for origin in [0.0_f32, 23.0, 47.0] {
+            for index in 1..extent - 1 {
+                let uv = (index as f32 + 0.5) / size;
+                assert!(uv > step_uv && uv < 1.0 - step_uv);
+                let center = refracted_depth_texel(uv, size, origin);
+                assert_eq!(center, (uv * size + origin) as i32);
+                for sign in [-1, 1] {
+                    let neighbor_uv = uv + sign as f32 * step_uv;
+                    let neighbor = refracted_depth_texel(neighbor_uv, size, origin);
+                    assert_eq!(neighbor, center + sign);
+                    assert_eq!(neighbor, (neighbor_uv * size + origin) as i32);
+                }
+            }
+            // Bounds rejection remains conservative, inclusive, and precedes
+            // all neighbor loads. Do not clamp a rejected footprint inward.
+            for uv in [0.0, 0.5 / size, step_uv, 1.0 - step_uv, 1.0] {
+                assert!(uv <= step_uv || uv >= 1.0 - step_uv);
+            }
+        }
+    }
+}
+
+#[test]
+fn refracted_depth_uses_viewport_size_and_endpoint_bound_without_snapping_the_ray() {
+    let refracted = function("camera_depth_debug_from_path");
+    ordered(
+        refracted,
+        &[
+            "result.refracted_uv = clamp(path.screen_uv + refract_offset, vec2(0.0), vec2(1.0));",
+            "let refracted_pixel = min(",
+            "result.refracted_uv * view.viewport.zw,",
+            "view.viewport.zw - vec2(1.0),",
+            ") + view.viewport.xy;",
+            "let refracted_position = vec4(refracted_pixel, in.position.zw);",
+            "let refracted_raw_depth = prepass_utils::prepass_depth(refracted_position, 0u);",
+            "let background = camera_view_position(result.refracted_uv, refracted_raw_depth);",
+        ],
+    );
+    assert!(!refracted.contains("result.refracted_uv * (view.viewport.zw - vec2(1.0))"));
+    assert!(
+        function("camera_depth_path")
+            .contains("let scene_raw_depth = prepass_utils::prepass_depth(in.position, 0u);")
+    );
+    assert!(
+        function("camera_view_position")
+            .contains("let ndc = vec3(uv * vec2(2.0, -2.0) + vec2(-1.0, 1.0), raw_depth);")
+    );
+    ordered(
+        function("opaque_background"),
+        &[
+            "subview_uv * view.viewport.zw + view.viewport.xy",
+            ") / dimensions;",
+            "return textureSampleLevel(",
+            "view_bindings::view_transmission_texture,",
+            "view_bindings::view_transmission_sampler,",
+            "full_uv,",
+            "0.0,",
+        ],
+    );
 }
 
 #[test]
