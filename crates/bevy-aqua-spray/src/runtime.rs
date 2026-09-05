@@ -77,6 +77,7 @@ pub(super) struct EmitInputs<'w, 's> {
     budget: ResMut<'w, Budget>,
     cameras: MainCameraQuery<'w, 's>,
     bed: Option<Res<'w, BedHeightMap>>,
+    bodies: Res<'w, ResolvedWaterBodies>,
     images: Res<'w, Assets<Image>>,
     probes: ProbeQuery<'w, 's>,
     emitters: EmitterQuery<'w, 's>,
@@ -144,6 +145,8 @@ struct Candidate {
     probe: Entity,
     position: Vec3,
     strength: f32,
+    normal: Vec3,
+    current: Vec3,
     area: f32,
 }
 
@@ -154,6 +157,7 @@ pub(super) fn emit_spray(inputs: EmitInputs) {
         mut budget,
         cameras,
         bed,
+        bodies,
         images,
         mut probes,
         mut emitters,
@@ -224,6 +228,9 @@ pub(super) fn emit_spray(inputs: EmitInputs) {
             probe: entity,
             position,
             strength,
+            normal: emission_normal(surface.normal),
+            // Ownership is at the undisplaced query coordinate, not the crest.
+            current: inherited_current(base.xz(), &bodies),
             area,
         });
     }
@@ -262,6 +269,8 @@ fn dispatch_candidates(
         let (transform, properties, spawner) = &mut emitter_list[index];
         transform.translation = candidate.position;
         properties.set("strength", (0.65 + candidate.strength).into());
+        properties.set("normal", candidate.normal.into());
+        properties.set("current", candidate.current.into());
         spawner.settings = SpawnerSettings::once((count as f32).into()).with_emit_on_start(false);
         spawner.active = true;
         spawner.reset();
@@ -271,6 +280,39 @@ fn dispatch_candidates(
             probe.cooldown = 0.2;
         }
     }
+}
+
+// Preserve every finite nonzero direction, including horizontal/downward normals.
+// Query shaders currently return upper-hemisphere normals; do not silently impose
+// that policy again here. Scale first to avoid overflow/underflow in normalization.
+fn emission_normal(normal: Vec3) -> Vec3 {
+    let scale = normal.abs().max_element();
+    if normal.is_finite() && scale > 0.0 {
+        (normal / scale).normalize()
+    } else {
+        Vec3::Y
+    }
+}
+
+fn inherited_current(xz: Vec2, bodies: &ResolvedWaterBodies) -> Vec3 {
+    // Match query::probe_resolution ordering, including a non-flowing owner
+    // masking later overlapping rivers. flow_at alone can sample outside banks.
+    for body in &bodies.0 {
+        if let Some(flow) = body.flow_at(xz)
+            && flow.margin >= 0.0
+        {
+            // Malformed authored flow must not poison GPU particle positions.
+            return if flow.flow.is_finite() {
+                Vec3::new(flow.flow.x, 0.0, flow.flow.y)
+            } else {
+                Vec3::ZERO
+            };
+        }
+        if body.contains(xz) {
+            return Vec3::ZERO;
+        }
+    }
+    Vec3::ZERO
 }
 
 fn sample_bed(map: &BedHeightMap, images: &Assets<Image>, xz: Vec2) -> Option<f32> {
@@ -320,6 +362,8 @@ mod tests {
                     probe,
                     position: Vec3::new(index as f32, 0.0, 0.0),
                     strength: 0.1,
+                    normal: Vec3::Y,
+                    current: Vec3::ZERO,
                     area: 0.00001,
                 }
             })
@@ -337,6 +381,19 @@ mod tests {
             &mut probes,
             &mut emitters,
         );
+    }
+
+    #[test]
+    fn dispatch_carries_launch_properties_without_scaling_current() {
+        let (mut world, mut candidates) = fixture(1, 1);
+        candidates[0].normal = emission_normal(Vec3::new(3.0, 4.0, 0.0));
+        candidates[0].current = Vec3::new(-4.0, 0.0, 0.0);
+        let mut budget = Budget { tokens: 160.0, ..default() };
+        dispatch(&mut world, candidates, &mut budget);
+        let properties = world.query::<&EffectProperties>().single(&world).unwrap();
+        assert_eq!(properties.get_stored("normal"), Some(Vec3::new(0.6, 0.8, 0.0).into()));
+        assert_eq!(properties.get_stored("current"), Some(Vec3::new(-4.0, 0.0, 0.0).into()));
+        assert_eq!(properties.get_stored("strength"), Some(0.75_f32.into()));
     }
 
     #[test]
@@ -464,5 +521,61 @@ mod heading37_tests {
                 assert!(actual.distance(expected) < 0.001, "yaw={yaw} pitch={pitch} actual={actual:?} expected={expected:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod direction38_tests {
+    use super::*;
+    use bevy_aqua_core::{ResolvedWaterBody, RiverPath, RiverPoint, WaterShape};
+
+    fn river() -> ResolvedWaterBody {
+        let shape = WaterShape::River {
+            path: RiverPath { points: vec![
+                RiverPoint::new(Vec2::new(-5.0, 0.0), 4.0, 2.0),
+                RiverPoint::new(Vec2::new(5.0, 0.0), 4.0, 2.0),
+            ] },
+        };
+        let transform = GlobalTransform::from(
+            Transform::from_xyz(13.0, 7.0, -9.0)
+                .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2))
+                .with_scale(Vec3::new(2.0, 1.0, 0.5)),
+        );
+        ResolvedWaterBody::resolve(Entity::from_bits(2), &shape, None, &transform).unwrap()
+    }
+
+    #[test]
+    fn current_uses_world_transform_and_undisplaced_owner() {
+        let body = river();
+        let base = body.world_point(Vec2::new(1.0, 0.0));
+        let displaced = body.world_point(Vec2::new(1.0, 5.0));
+        let bodies = ResolvedWaterBodies(vec![body]);
+        assert!(inherited_current(base, &bodies).distance(Vec3::new(0.0, 0.0, -4.0)) < 1e-4);
+        assert_eq!(inherited_current(displaced, &bodies), Vec3::ZERO);
+    }
+
+    #[test]
+    fn absent_flow_and_first_nonflowing_owner_are_zero() {
+        let body = river();
+        let base = body.world_point(Vec2::ZERO);
+        let lake = ResolvedWaterBody::resolve(
+            Entity::from_bits(3), &WaterShape::Circle { radius: 20.0 }, None,
+            &GlobalTransform::from(Transform::from_xyz(base.x, 7.0, base.y)),
+        ).unwrap();
+        assert_eq!(inherited_current(base, &ResolvedWaterBodies::default()), Vec3::ZERO);
+        assert_eq!(inherited_current(base, &ResolvedWaterBodies(vec![lake, body])), Vec3::ZERO);
+    }
+
+    #[test]
+    fn normal_sanitization_preserves_orientation_not_just_upward_slopes() {
+        for invalid in [Vec3::ZERO, Vec3::splat(f32::NAN), Vec3::new(f32::INFINITY, 1.0, 0.0)] {
+            assert_eq!(emission_normal(invalid), Vec3::Y);
+        }
+        let slope = Vec3::new(0.6, 0.8, 0.0);
+        for scale in [3.0, 1e30, 1e-30] {
+            assert!(emission_normal(slope * scale).distance(slope) < 1e-6);
+        }
+        assert_eq!(emission_normal(Vec3::NEG_Y), Vec3::NEG_Y);
+        assert_eq!(emission_normal(Vec3::X), Vec3::X);
     }
 }
