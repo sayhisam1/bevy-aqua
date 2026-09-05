@@ -32,7 +32,9 @@ pub const NO_BED_DEPTH: f32 = 256.0;
 /// The image is single-channel: the red channel stores height normalised
 /// into [`BedHeightMap::height_range`]. Texel (0, 0) is the minimum corner:
 /// world [`BedHeightMap::origin`] is the centre of that texel, and
-/// [`BedHeightMap::size`] covers the whole image edge to edge.
+/// [`BedHeightMap::size`] is the distance from the first texel centre to the
+/// last, not the distance between the outer pixel edges. For an `N`-texel
+/// axis with spacing `step`, this distance is `(N - 1) * step`.
 #[derive(Resource, Debug, Clone, ExtractResource)]
 pub struct BedHeightMap {
     /// Single-channel image; red channel holds normalised height in [0, 1].
