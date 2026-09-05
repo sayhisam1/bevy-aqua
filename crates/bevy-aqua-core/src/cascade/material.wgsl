@@ -25,7 +25,7 @@
 #import aqua::foam::contract::FOAM_PATTERN_RESOLUTION
 #import aqua::foam::shade::{CREST_FOAM_NORMAL_STRENGTH, CREST_FOAM_SPECULAR_BOOST, INV_PI, CREST_FOAM_SPECULAR_FALLOFF, CREST_FOAM_WHITE_COLOR, foam_bubble_colour, local_foam_light, river_streak_coverage, sample_foam_density, surface_foam_mask}
 
-#import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
+#import aqua::shore::water::{blended_water_depth, caustic_bed_radiance, set_caustic_xz_footprint}
 #import bevy_aqua_core::deform::{deform_current}
 #import bevy_aqua_core::material::{BodyLightingState, CameraDepthDebug, CameraDepthPath, FoamState, LocalLightingState, MediumState, NearSurface, PrimaryLightState, SurfaceVertexOutput, TransmissionState}
 #import aqua::light::incident::{GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, local_light_contribution, resolve_primary_light, safe_normalize, sample_diffuse_environment, sample_environment, sample_local_light, smith_masking_shadowing, strongest_incident_directional_light, view_direction}
@@ -497,6 +497,11 @@ fn compose_water(
 
 @fragment
 fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
+    // Caustic UVs are undisplaced; do not change other effects' footprint.
+    set_caustic_xz_footprint(max(
+        length(dpdx(in.undisplaced_xz)),
+        length(dpdy(in.undisplaced_xz)),
+    ));
     // Position derivatives measure adjacent fragments in world XZ. Their
     // maximum length conservatively bounds metres per screen pixel for LOD.
     set_xz_footprint(max(
