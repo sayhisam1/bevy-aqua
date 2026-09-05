@@ -58,6 +58,18 @@ type EmitterQuery<'w, 's> = Query<
     With<Emitter>,
 >;
 
+type ProbeQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static GlobalTransform,
+        &'static WaveSurface,
+        &'static mut Probe,
+    ),
+    With<WaveQuery>,
+>;
+
 #[derive(SystemParam)]
 pub(super) struct EmitInputs<'w, 's> {
     time: Res<'w, Time>,
@@ -66,16 +78,7 @@ pub(super) struct EmitInputs<'w, 's> {
     cameras: MainCameraQuery<'w, 's>,
     bed: Option<Res<'w, BedHeightMap>>,
     images: Res<'w, Assets<Image>>,
-    probes: Query<
-        'w,
-        's,
-        (
-            &'static GlobalTransform,
-            &'static WaveSurface,
-            &'static mut Probe,
-        ),
-        With<WaveQuery>,
-    >,
+    probes: ProbeQuery<'w, 's>,
     emitters: EmitterQuery<'w, 's>,
 }
 
@@ -124,6 +127,7 @@ fn breaking_surf(depth: Option<f32>, crest: f32, threshold: f32) -> bool {
 
 #[derive(Clone, Copy)]
 struct Candidate {
+    probe: Entity,
     position: Vec3,
     strength: f32,
     area: f32,
@@ -154,7 +158,7 @@ pub(super) fn emit_spray(inputs: EmitInputs) {
     budget.tokens = (budget.tokens + time.delta_secs() * limits.particles_per_second)
         .min(limits.particles_per_second);
     let mut candidates = Vec::new();
-    for (transform, surface, mut probe) in &mut probes {
+    for (entity, transform, surface, mut probe) in &mut probes {
         if !surface.valid {
             continue;
         }
@@ -203,26 +207,44 @@ pub(super) fn emit_spray(inputs: EmitInputs) {
         };
         let strength = surface.crest.max(shore_strength);
         candidates.push(Candidate {
+            probe: entity,
             position,
             strength,
             area,
         });
-        probe.cooldown = 0.2;
     }
+    dispatch_candidates(candidates, limits, &mut budget, &mut probes, &mut emitters);
+}
+
+// Admission means one pending CPU burst, not confirmed GPU particle creation.
+fn dispatch_candidates(
+    mut candidates: Vec<Candidate>,
+    limits: crate::Limits,
+    budget: &mut Budget,
+    probes: &mut ProbeQuery,
+    emitters: &mut EmitterQuery,
+) {
     candidates.sort_by(|a, b| b.strength.total_cmp(&a.strength));
     let mut coverage = 0.0;
     let mut emitter_list: Vec<_> = emitters.iter_mut().collect();
     if emitter_list.is_empty() {
         return;
     }
+    let mut used_emitters = 0;
     for candidate in candidates {
+        if used_emitters == emitter_list.len() {
+            break;
+        }
         if coverage + candidate.area > limits.coverage || budget.tokens < 1.0 {
             continue;
         }
         let wanted = (2.0 + candidate.strength * (limits.burst - 2) as f32).round() as u32;
         let count = wanted.min(limits.burst).min(budget.tokens as u32).max(1);
         let index = budget.emitter_cursor % emitter_list.len();
-        budget.emitter_cursor += 1;
+        // Each emitter stores only one pending settings/transform/reset. Do not
+        // wrap onto an emitter already written by this invocation.
+        budget.emitter_cursor = (index + 1) % emitter_list.len();
+        used_emitters += 1;
         let (transform, properties, spawner) = &mut emitter_list[index];
         transform.translation = candidate.position;
         properties.set("strength", (0.65 + candidate.strength).into());
@@ -231,6 +253,9 @@ pub(super) fn emit_spray(inputs: EmitInputs) {
         spawner.reset();
         budget.tokens -= count as f32;
         coverage += candidate.area;
+        if let Ok((_, _, _, mut probe)) = probes.get_mut(candidate.probe) {
+            probe.cooldown = 0.2;
+        }
     }
 }
 
@@ -251,6 +276,137 @@ fn sample_bed(map: &BedHeightMap, images: &Assets<Image>, xz: Vec2) -> Option<f3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Exercise the production dispatch path with real ECS query items, without
+    // a renderer, projection setup, or a duplicate admission algorithm.
+    fn fixture(pool: usize, count: usize) -> (World, Vec<Candidate>) {
+        let mut world = World::new();
+        for _ in 0..pool {
+            world.spawn((
+                Emitter,
+                Transform::default(),
+                EffectProperties::default(),
+                EffectSpawner::new(&SpawnerSettings::once(1.0.into()).with_emit_on_start(false)),
+            ));
+        }
+        let candidates = (0..count)
+            .map(|index| {
+                let probe = world
+                    .spawn((
+                        Probe {
+                            index,
+                            cooldown: 0.0,
+                        },
+                        WaveQuery,
+                        WaveSurface::default(),
+                        GlobalTransform::default(),
+                    ))
+                    .id();
+                Candidate {
+                    probe,
+                    position: Vec3::new(index as f32, 0.0, 0.0),
+                    strength: 0.1,
+                    area: 0.00001,
+                }
+            })
+            .collect();
+        (world, candidates)
+    }
+
+    fn dispatch(world: &mut World, candidates: Vec<Candidate>, budget: &mut Budget) {
+        let mut state = bevy::ecs::system::SystemState::<(ProbeQuery, EmitterQuery)>::new(world);
+        let (mut probes, mut emitters) = state.get_mut(world).expect("valid dispatch queries");
+        dispatch_candidates(
+            candidates,
+            limits(SprayQuality::High),
+            budget,
+            &mut probes,
+            &mut emitters,
+        );
+    }
+
+    #[test]
+    fn dispatch_reserves_each_emitter_once_and_charges_only_retained_bursts() {
+        let (mut world, candidates) = fixture(24, 40);
+        let original = candidates.clone();
+        let mut budget = Budget {
+            tokens: 160.0,
+            emitter_cursor: 23,
+            ..default()
+        };
+        dispatch(&mut world, candidates, &mut budget);
+        // crest=0.1 produces round(2 + 0.1*18) = 4 particles.
+        assert_eq!(budget.tokens, 64.0);
+        assert_eq!(budget.emitter_cursor, 23);
+        for (index, candidate) in original.iter().enumerate() {
+            assert_eq!(
+                world.get::<Probe>(candidate.probe).unwrap().cooldown,
+                if index < 24 { 0.2 } else { 0.0 }
+            );
+        }
+        let mut positions = Vec::new();
+        let mut pending_count = 0.0;
+        for (transform, spawner) in world.query::<(&Transform, &EffectSpawner)>().iter(&world) {
+            positions.push(transform.translation.x as usize);
+            assert!(!spawner.has_completed());
+            pending_count += spawner.settings.count().range()[0];
+        }
+        positions.sort_unstable();
+        assert_eq!(positions, (0..24).collect::<Vec<_>>());
+        assert_eq!(pending_count, 160.0 - budget.tokens);
+    }
+
+    #[test]
+    fn rejection_does_not_charge_cooldown_tokens_or_cursor() {
+        for (pool, tokens, area) in [(0, 160.0, 0.00001), (1, 0.5, 0.00001), (1, 160.0, 0.03)] {
+            let (mut world, mut candidates) = fixture(pool, 1);
+            candidates[0].area = area;
+            let probe = candidates[0].probe;
+            let mut budget = Budget {
+                tokens,
+                emitter_cursor: usize::MAX,
+                ..default()
+            };
+            dispatch(&mut world, candidates, &mut budget);
+            assert_eq!(world.get::<Probe>(probe).unwrap().cooldown, 0.0);
+            assert_eq!(budget.tokens, tokens);
+            assert_eq!(budget.emitter_cursor, usize::MAX);
+        }
+    }
+
+    #[test]
+    fn partial_token_burst_charges_actual_count_and_cursor_wraps_without_overflow() {
+        let (mut world, candidates) = fixture(2, 2);
+        let first = candidates[0].probe;
+        let second = candidates[1].probe;
+        let mut budget = Budget {
+            tokens: 1.5,
+            emitter_cursor: usize::MAX,
+            ..default()
+        };
+        dispatch(&mut world, candidates, &mut budget);
+        assert_eq!(budget.tokens, 0.5);
+        assert_eq!(budget.emitter_cursor, 0);
+        assert_eq!(world.get::<Probe>(first).unwrap().cooldown, 0.2);
+        assert_eq!(world.get::<Probe>(second).unwrap().cooldown, 0.0);
+    }
+
+    #[test]
+    fn reservation_is_per_invocation_not_particle_lifetime() {
+        let (mut world, candidates) = fixture(1, 2);
+        let mut budget = Budget {
+            tokens: 160.0,
+            ..default()
+        };
+        dispatch(&mut world, vec![candidates[0]], &mut budget);
+        dispatch(&mut world, vec![candidates[1]], &mut budget);
+        assert_eq!(budget.tokens, 152.0);
+        let transform = world
+            .query_filtered::<&Transform, With<Emitter>>()
+            .single(&world)
+            .unwrap();
+        assert_eq!(transform.translation, candidates[1].position);
+    }
 
     #[test]
     fn bounded_probe_base_uses_resolved_surface_level() {
