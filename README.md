@@ -240,6 +240,15 @@ CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-server-runner \
 
 See [`examples/README.md`](examples/README.md) for the full command list.
 
+## Screen-space refraction limitation
+
+Refraction validates one opaque depth texel, while transmission color uses linear
+filtering. At a foreground silhouette, a neighboring above-water opaque texel can
+therefore contribute color even when `RefractionValidity` accepts the sample.
+Viewport-edge color clamping does not prevent this interior silhouette case.
+`RefractionValidity` is not proof that every filtered color contributor lies
+behind the water.
+
 ## Lighting appearance (unreleased)
 
 Cubemap-only oceans now use the same dielectric Fresnel response as planar
