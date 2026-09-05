@@ -288,9 +288,13 @@ fn camera_depth_debug_from_path(
 // comes only from the displacement normal; no roughness mip or blur is used.
 fn opaque_background(subview_uv: vec2<f32>) -> vec3<f32> {
     let dimensions = vec2<f32>(textureDimensions(view_bindings::view_transmission_texture));
-    let full_uv = (
-        subview_uv * view.viewport.zw + view.viewport.xy
-    ) / dimensions;
+    // Keep the linear footprint inside this viewport, not just the backing texture.
+    let color_pixel = clamp(
+        subview_uv * view.viewport.zw + view.viewport.xy,
+        view.viewport.xy + vec2(0.5),
+        view.viewport.xy + view.viewport.zw - vec2(0.5),
+    );
+    let full_uv = color_pixel / dimensions;
     return textureSampleLevel(
         view_bindings::view_transmission_texture,
         view_bindings::view_transmission_sampler,

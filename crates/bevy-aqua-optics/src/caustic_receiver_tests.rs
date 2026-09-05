@@ -380,7 +380,7 @@ fn refracted_depth_uses_viewport_size_and_endpoint_bound_without_snapping_the_ra
         function("opaque_background"),
         &[
             "subview_uv * view.viewport.zw + view.viewport.xy",
-            ") / dimensions;",
+            "let full_uv = color_pixel / dimensions;",
             "return textureSampleLevel(",
             "view_bindings::view_transmission_texture,",
             "view_bindings::view_transmission_sampler,",
@@ -424,5 +424,188 @@ fn cpu_footprint_rejects_clamping_foreground_and_degenerate_not_sharp_zero() {
     assert_eq!(footprint(0.5, 1.0, [0.2; 4], [0.1; 4]), None);
     for distances in [[0.0; 4], [f32::NAN; 4], [f32::INFINITY; 4], [1e20; 4]] {
         assert_eq!(footprint(0.5, 100.0, [0.2; 4], distances), None);
+    }
+}
+
+#[test]
+fn transmission_color_clamps_physical_pixel_to_viewport_centers_before_normalizing() {
+    ordered(
+        function("opaque_background"),
+        &[
+            "let dimensions = vec2<f32>(textureDimensions(view_bindings::view_transmission_texture));",
+            "let color_pixel = clamp(",
+            "subview_uv * view.viewport.zw + view.viewport.xy,",
+            "view.viewport.xy + vec2(0.5),",
+            "view.viewport.xy + view.viewport.zw - vec2(0.5),",
+            ");",
+            "let full_uv = color_pixel / dimensions;",
+            "return textureSampleLevel(",
+            "view_bindings::view_transmission_texture,",
+            "view_bindings::view_transmission_sampler,",
+            "full_uv,",
+            "0.0,",
+        ],
+    );
+    let color = function("opaque_background");
+    assert_eq!(color.matches("clamp(").count(), 1);
+    assert_eq!(color.matches("textureSampleLevel(").count(), 1);
+    assert!(!color.contains("textureLoad("));
+    assert!(!color.contains("prepass_depth("));
+}
+
+// Independent scalar-channel reference for mip-zero bilinear ClampToEdge.
+// Integer viewport origin/size, nonempty viewport, full-resolution backing.
+// These CPU contracts do not execute WGSL or establish native visual acceptance.
+fn transmission_color_pixel(
+    uv: [f32; 2],
+    origin: [u32; 2],
+    size: [u32; 2],
+    inset: bool,
+) -> [f32; 2] {
+    std::array::from_fn(|axis| {
+        let lo = origin[axis] as f32;
+        let span = size[axis] as f32;
+        let pixel = uv[axis] * span + lo;
+        if inset {
+            pixel.clamp(lo + 0.5, lo + span - 0.5)
+        } else {
+            pixel
+        }
+    })
+}
+
+fn linear_transmission_sample(
+    pixel: [f32; 2],
+    target: [u32; 2],
+    texel: impl Fn(u32, u32) -> f32,
+) -> f32 {
+    // Include physical-dimension normalization and the inverse sampler mapping.
+    let p: [f32; 2] = std::array::from_fn(|a| {
+        let uv = pixel[a] / target[a] as f32;
+        uv * target[a] as f32 - 0.5
+    });
+    let base = [p[0].floor(), p[1].floor()];
+    let fraction = [p[0] - base[0], p[1] - base[1]];
+    let mut value = 0.0;
+    for y in 0..2 {
+        for x in 0..2 {
+            let ix = (base[0] + x as f32).clamp(0.0, (target[0] - 1) as f32) as u32;
+            let iy = (base[1] + y as f32).clamp(0.0, (target[1] - 1) as f32) as u32;
+            let wx = if x == 0 {
+                1.0 - fraction[0]
+            } else {
+                fraction[0]
+            };
+            let wy = if y == 0 {
+                1.0 - fraction[1]
+            } else {
+                fraction[1]
+            };
+            value += wx * wy * texel(ix, iy);
+        }
+    }
+    value
+}
+
+#[test]
+fn inset_linear_filter_isolates_exterior_sentinels_at_edges_and_corners() {
+    let origin = [64, 48];
+    let size = [512, 384];
+    let sample = |uv, inset, sentinel| {
+        linear_transmission_sample(
+            transmission_color_pixel(uv, origin, size, inset),
+            [640, 480],
+            |x, y| {
+                if (64..576).contains(&x) && (48..432).contains(&y) {
+                    0.0
+                } else {
+                    sentinel
+                }
+            },
+        )
+    };
+    for uv in [[0.0, 0.5], [1.0, 0.5], [0.5, 0.0], [0.5, 1.0]] {
+        assert!((sample(uv, false, 1.0) - 0.5).abs() < 1e-5);
+    }
+    for u in [0.0, 0.25 / 512.0, 0.5, 1.0 - 0.25 / 512.0, 1.0] {
+        for v in [0.0, 0.25 / 384.0, 0.5, 1.0 - 0.25 / 384.0, 1.0] {
+            let uv = [u, v];
+            assert_eq!(sample(uv, true, 1.0), sample(uv, true, 0.0));
+        }
+    }
+    for uv in [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]] {
+        assert!((sample(uv, false, 1.0) - 0.75).abs() < 1e-5);
+        assert_eq!(sample(uv, true, 1.0), 0.0);
+    }
+}
+
+#[test]
+fn full_target_color_clamp_matches_physical_clamp_to_edge() {
+    for size in [[512, 384], [7, 3], [1, 1], [1, 7], [7, 1]] {
+        for u in [0.0, 0.001, 0.25, 0.5, 0.999, 1.0] {
+            for v in [0.0, 0.001, 0.25, 0.5, 0.999, 1.0] {
+                let sample = |inset| {
+                    linear_transmission_sample(
+                        transmission_color_pixel([u, v], [0, 0], size, inset),
+                        size,
+                        |x, y| ((x * 7 + y * 13) % 31) as f32 / 31.0,
+                    )
+                };
+                assert!((sample(false) - sample(true)).abs() < 1e-5);
+            }
+        }
+    }
+}
+
+#[test]
+fn interior_color_coordinates_and_linear_interpolation_remain_unchanged() {
+    for (origin, size) in [([64, 48], [512, 384]), ([3, 5], [7, 9]), ([0, 0], [3, 5])] {
+        for y in 0..size[1] {
+            for x in 0..size[0] {
+                let uv = [
+                    (x as f32 + 0.5) / size[0] as f32,
+                    (y as f32 + 0.5) / size[1] as f32,
+                ];
+                assert_eq!(
+                    transmission_color_pixel(uv, origin, size, false),
+                    transmission_color_pixel(uv, origin, size, true)
+                );
+            }
+        }
+        // Non-center interior coordinate: retain interpolation, do not snap.
+        let uv = [1.25 / size[0] as f32, 1.75 / size[1] as f32];
+        let old = transmission_color_pixel(uv, origin, size, false);
+        let new = transmission_color_pixel(uv, origin, size, true);
+        assert_eq!(old, new);
+        let value = linear_transmission_sample(new, [640, 480], |x, y| (x + y) as f32);
+        assert!((value - (origin[0] + origin[1]) as f32 - 2.0).abs() < 1e-4);
+    }
+}
+
+#[test]
+fn singleton_axes_and_nonzero_origins_clamp_to_their_own_texel_centers() {
+    for origin in [[0, 0], [23, 47], [64, 48]] {
+        for size in [[1, 1], [1, 7], [9, 1], [7, 9]] {
+            for uv in [[0.0, 0.0], [1.0, 1.0], [0.0, 1.0], [1.0, 0.0], [0.5, 0.5]] {
+                let pixel = transmission_color_pixel(uv, origin, size, true);
+                for a in 0..2 {
+                    assert!(pixel[a] >= origin[a] as f32 + 0.5);
+                    assert!(pixel[a] <= (origin[a] + size[a]) as f32 - 0.5);
+                    if size[a] == 1 {
+                        assert_eq!(pixel[a], origin[a] as f32 + 0.5);
+                    }
+                }
+                let sentinel = linear_transmission_sample(pixel, [640, 480], |x, y| {
+                    if (origin[0]..origin[0] + size[0]).contains(&x)
+                        && (origin[1]..origin[1] + size[1]).contains(&y)
+                    {
+                        0.0
+                    } else {
+                        1.0
+                    }
+                });
+                assert!(sentinel.abs() < 1e-5);
+            }
+        }
     }
 }
