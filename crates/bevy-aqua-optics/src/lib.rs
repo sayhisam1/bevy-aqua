@@ -75,3 +75,6 @@ mod far_opacity_tests;
 
 #[cfg(test)]
 mod resolved_normal_tests;
+
+#[cfg(test)]
+mod caustic_receiver_tests;

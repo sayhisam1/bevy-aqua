@@ -1,0 +1,335 @@
+//! Prototype regression contracts, not approval of geometry, optics, or GPU cost.
+//! CPU references do not execute WGSL. The frozen-offset 0.05 m / 1% view-Z
+//! heuristic can reject smooth slopes and accept small inter-surface jumps.
+const OPTICS: &str = include_str!("optics.wgsl");
+
+fn function(name: &str) -> &str {
+    let start = OPTICS.find(&format!("fn {name}(")).unwrap();
+    let tail = &OPTICS[start..];
+    &tail[..tail.find("\n}\n").unwrap() + 3]
+}
+fn ordered(source: &str, parts: &[&str]) {
+    let mut tail = source;
+    for part in parts {
+        let index = tail
+            .find(part)
+            .unwrap_or_else(|| panic!("missing ordered clause: {part}"));
+        tail = &tail[index + part.len()..];
+    }
+}
+
+#[test]
+fn centers_initialize_reconstruct_once_and_reuse_without_depth_reload() {
+    let types = include_str!("../../bevy-aqua-core/src/cascade/types.wgsl");
+    for clause in [
+        "receiver_world: vec3<f32>,",
+        "raw_receiver_world: vec3<f32>,",
+        "refracted_receiver_world: vec3<f32>,",
+    ] {
+        assert!(types.contains(clause));
+    }
+    let empty = function("empty_camera_depth_path");
+    for clause in [
+        "result.path_length = 0.0;",
+        "result.receiver_world = vec3(0.0);",
+        "result.has_background = false;",
+    ] {
+        assert!(empty.contains(clause));
+    }
+    let raw = function("camera_depth_path");
+    ordered(
+        raw,
+        &[
+            "var result = empty_camera_depth_path();",
+            "#ifdef DEPTH_PREPASS",
+            "let scene_raw_depth = prepass_utils::prepass_depth(in.position, 0u);",
+            "result.has_background = scene_raw_depth > 0.0;",
+            "if result.has_background {",
+            "let background = camera_view_position(result.screen_uv, scene_raw_depth);",
+            "result.receiver_world = (view.world_from_view * vec4(background, 1.0)).xyz;",
+            "if background.z < water.z {",
+            "result.path_length = length(background - water);",
+        ],
+    );
+    assert_eq!(raw.matches("prepass_utils::prepass_depth(").count(), 1);
+    let refracted = function("camera_depth_debug_from_path");
+    ordered(
+        refracted,
+        &[
+            "result.refracted_path_length = path.path_length;",
+            "result.refracted_uv = path.screen_uv;",
+            "result.raw_receiver_world = path.receiver_world;",
+            "result.refracted_receiver_world = path.receiver_world;",
+            "result.refracted_sample_valid = false;",
+            "result.has_background = path.has_background;",
+            "#ifdef DEPTH_PREPASS",
+            "let refracted_raw_depth = prepass_utils::prepass_depth(refracted_position, 0u);",
+            "result.refracted_sample_valid = refracted_raw_depth > 0.0\n        && refracted_raw_depth < in.position.z;",
+            "if result.refracted_sample_valid {",
+            "result.refracted_path_length = length(background - water);",
+            "result.refracted_receiver_world = (view.world_from_view * vec4(background, 1.0)).xyz;",
+        ],
+    );
+    assert_eq!(
+        refracted.matches("prepass_utils::prepass_depth(").count(),
+        1
+    );
+    for name in ["illuminate_bed", "resolve_transmission"] {
+        assert!(!function(name).contains("prepass_utils::prepass_depth("));
+    }
+}
+
+#[test]
+fn selected_flag_keeps_uv_receiver_and_path_on_same_raw_or_refracted_lane() {
+    let resolve = function("resolve_transmission");
+    let lanes: Vec<_> = resolve
+        .split("} else if mode == DEBUG_MODE_BEAUTY {")
+        .collect();
+    assert_eq!(lanes.len(), 2);
+    ordered(
+        lanes[0],
+        &[
+            "let refraction_enabled = mode == DEBUG_MODE_TRANSMISSION",
+            "|| mode == DEBUG_MODE_BEER_LAMBERT",
+            "|| mode == DEBUG_MODE_SEA_FLOOR;",
+            "let use_refraction = refraction_enabled\n            && depth_debug.refracted_sample_valid;",
+        ],
+    );
+    assert!(lanes[1].contains("let use_refraction = depth_debug.refracted_sample_valid;"));
+    // Whitespace-normalized exact expressions, not merely presence of field names.
+    for lane in lanes {
+        let compact: String = lane.split_whitespace().collect();
+        for clause in [
+            "select(depth_debug.screen_uv,depth_debug.refracted_uv,use_refraction,)",
+            "select(depth_debug.path_length,depth_debug.refracted_path_length,use_refraction,)",
+            "illuminate_bed(scene_colour,in,primary,depth_debug,use_refraction,background_uv,source_slot,)",
+        ] {
+            assert!(compact.contains(clause), "{clause}");
+        }
+    }
+    let bed = function("illuminate_bed");
+    assert!(bed.contains("select(depth.path_length, depth.refracted_path_length, use_refraction)"));
+    assert!(bed.contains(
+        "select(depth.raw_receiver_world, depth.refracted_receiver_world, use_refraction)"
+    ));
+    assert!(!bed.contains("in.undisplaced_xz"));
+}
+
+#[test]
+fn receiver_admission_precedes_neighbors_and_caustic_texture_sampling() {
+    ordered(
+        function("illuminate_bed"),
+        &[
+            "if surface.caustics.x * surface.sea_floor.w <= 0.0 || !depth.has_background {",
+            "return scene_colour;",
+            "if !(selected_path > LUMINANCE_EPSILON) { return scene_colour; }",
+            "if !(all(abs(receiver) < vec3(1e20))) { return scene_colour; }",
+            "var receiver_slot = 0u;",
+            "var level = cascade_layout.bed_range.z;",
+            "if field_params.info.x > 0.5 {",
+            "let field = sample_field_level(receiver.xz);",
+            "receiver_slot = u32(field.y + 0.5);",
+            "if receiver_slot != source_slot { return scene_colour; }",
+            "if receiver_slot != 0u { level = field.x; }",
+            "} else if source_slot != 0u {",
+            "return scene_colour;",
+            "let water_depth = level - receiver.y;",
+            "if !(water_depth > LUMINANCE_EPSILON && water_depth < surface.caustics.w) {",
+            "return scene_colour;",
+            "let incident = strongest_incident_directional_light(",
+            "if !incident.valid || incident.direction.y <= 0.0 || incident.shadow <= 0.0 {",
+            "return scene_colour;",
+            "let footprint = receiver_caustic_footprint(in, background_uv, receiver, use_refraction);",
+            "if footprint < 0.0 { return scene_colour; }",
+            "return caustic_bed_radiance(\n        scene_colour,\n        receiver.xz,\n        water_depth,\n        footprint,",
+        ],
+    );
+}
+
+#[test]
+fn footprint_is_four_conditional_neighbors_with_max_span_and_invalid_sentinel() {
+    let fp = function("receiver_caustic_footprint");
+    ordered(
+        fp,
+        &[
+            "#ifdef DEPTH_PREPASS",
+            "let span = select(view.viewport.zw, view.viewport.zw - vec2(1.0), use_refraction);",
+            "if any(span <= vec2(1.0)) { return -1.0; }",
+            "let step_uv = vec2(1.0) / span;",
+            "if any(background_uv <= step_uv) || any(background_uv >= vec2(1.0) - step_uv) {",
+            "return -1.0;",
+            "let center_view = (view.view_from_world * vec4(receiver_world, 1.0)).xyz;",
+            "if !(all(abs(center_view) < vec3(1e20))) { return -1.0; }",
+            "let maximum_z_jump = max(0.05, abs(center_view.z) * 0.01);",
+            "for (var i = 0u; i < 4u; i++) {",
+            "var offset = vec2(1.0, 0.0);",
+            "if i == 1u { offset = vec2(-1.0, 0.0); }",
+            "if i == 2u { offset = vec2(0.0, 1.0); }",
+            "if i == 3u { offset = vec2(0.0, -1.0); }",
+            "let uv = background_uv + offset * step_uv;",
+            "let pixel = uv * span + view.viewport.xy;",
+            "let raw_depth = prepass_utils::prepass_depth(vec4(pixel, in.position.zw), 0u);",
+            "if !(raw_depth > 0.0 && raw_depth < in.position.z) { return -1.0; }",
+            "let neighbor_view = camera_view_position(uv, raw_depth);",
+            "if !(all(abs(neighbor_view) < vec3(1e20))) { return -1.0; }",
+            "if abs(neighbor_view.z - center_view.z) > maximum_z_jump { return -1.0; }",
+            "let neighbor_world = (view.world_from_view * vec4(neighbor_view, 1.0)).xyz;",
+            "if !(all(abs(neighbor_world) < vec3(1e20))) { return -1.0; }",
+            "footprint = max(footprint, length(neighbor_world.xz - receiver_world.xz));",
+            "if !(footprint > 0.0 && footprint < 1e20) { return -1.0; }",
+            "return footprint;",
+            "#else",
+            "return -1.0;",
+            "#endif",
+        ],
+    );
+    assert_eq!(fp.matches("prepass_utils::prepass_depth(").count(), 1);
+    for forbidden in [
+        "return 0.0;",
+        "dpdx(",
+        "dpdy(",
+        "textureSample",
+        "clamp(",
+        "camera_depth_debug_from_path(",
+    ] {
+        assert!(!fp.contains(forbidden));
+    }
+    // No neighbor refraction replay: a limitation, not physical correctness.
+    assert!(OPTICS.contains("frozen selected refraction offset, NOT neighbor acceptance replay"));
+    assert!(
+        fp.contains("Smooth steep slopes may be rejected too. Small discontinuities can pass;")
+    );
+    assert!(fp.contains("this is not a surface-ID test"));
+}
+
+fn receiver_depth(
+    ocean: f32,
+    field: Option<(f32, u32)>,
+    source: u32,
+    bed: f32,
+    limit: f32,
+) -> Option<f32> {
+    let level = match field {
+        Some((_, slot)) if slot != source => return None,
+        Some((level, slot)) if slot != 0 => level,
+        None if source != 0 => return None,
+        _ => ocean,
+    };
+    let depth = level - bed;
+    (depth > 1e-6 && depth < limit).then_some(depth)
+}
+#[test]
+fn cpu_receiver_level_uses_ocean_or_same_body_not_surface_fragment_height() {
+    assert_eq!(receiver_depth(10.0, None, 0, 8.0, 20.0), Some(2.0));
+    // Slot zero uses ocean elevation even if the sampled field level differs.
+    assert_eq!(
+        receiver_depth(10.0, Some((-99.0, 0)), 0, 8.0, 20.0),
+        Some(2.0)
+    );
+    for (level, bed) in [(10.0, 8.0), (-10.0, -12.0)] {
+        assert_eq!(
+            receiver_depth(0.0, Some((level, 3)), 3, bed, 20.0),
+            Some(2.0)
+        );
+        assert_eq!(receiver_depth(0.0, Some((level, 3)), 2, bed, 20.0), None);
+        assert_eq!(receiver_depth(level, None, 3, bed, 20.0), None);
+        assert_eq!(receiver_depth(level, None, 0, level, 20.0), None);
+        assert_eq!(receiver_depth(level, None, 0, level + 1.0, 20.0), None);
+        assert_eq!(receiver_depth(level, None, 0, level - 20.0, 20.0), None);
+    }
+    assert_eq!(receiver_depth(0.0, Some((10.0, 3)), 0, 8.0, 20.0), None);
+    assert_eq!(receiver_depth(10.0, Some((10.0, 0)), 3, 8.0, 20.0), None);
+    for bed in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert_eq!(receiver_depth(10.0, None, 0, bed, 20.0), None);
+    }
+}
+
+#[test]
+fn cpu_selection_falls_back_exactly_and_edge_threshold_is_inclusive_monotone() {
+    let raw = ([1.0_f32, 8.0, -3.0], [0.2, 0.3], 4.0);
+    let refracted = ([9.0_f32, -2.0, 6.0], [0.7, 0.8], 12.0);
+    for (enabled, valid, expected) in [
+        (false, false, raw),
+        (false, true, raw),
+        (true, false, raw),
+        (true, true, refracted),
+    ] {
+        let selected = if enabled && valid { refracted } else { raw };
+        assert_eq!(selected, expected);
+    }
+    let threshold = |z: f32| 0.05_f32.max(z.abs() * 0.01);
+    let accepted = |z: f32, jump: f32| jump.abs() <= threshold(z);
+    let mut previous = 0.0;
+    for depth in [0.0, 1.0, 4.99, 5.0, 5.01, 10.0, 100.0, 1000.0] {
+        let t = threshold(-depth);
+        assert!(t >= previous);
+        assert_eq!(t, threshold(depth));
+        assert!(accepted(-depth, t));
+        assert!(accepted(-depth, -t));
+        assert!(!accepted(-depth, t + 1e-4));
+        previous = t;
+    }
+    assert_eq!(threshold(-5.0), 0.05);
+    assert!(accepted(-100.0, 0.5)); // unrelated surfaces can pass at distance
+    assert!(!accepted(-1.0, 0.06)); // a smooth steep slope can fail nearby
+}
+
+#[test]
+fn cpu_raw_and_refracted_viewport_addressing_keep_origin_and_distinct_spans() {
+    let origin = [23.0_f32, 47.0];
+    let size = [800.0_f32, 600.0];
+    let uv = [0.25_f32, 0.5];
+    for refracted in [false, true] {
+        for axis in 0..2 {
+            let span = size[axis] - if refracted { 1.0 } else { 0.0 };
+            let center = uv[axis] * span + origin[axis];
+            for sign in [-1.0, 1.0] {
+                let neighbor = (uv[axis] + sign / span) * span + origin[axis];
+                assert!((neighbor - center - sign).abs() < 1e-4);
+            }
+            assert!(
+                (center - (uv[axis] * size[axis] + origin[axis])
+                    + if refracted { uv[axis] } else { 0.0 })
+                .abs()
+                    < 1e-4
+            );
+        }
+    }
+}
+
+#[test]
+fn cpu_footprint_rejects_clamping_foreground_and_degenerate_not_sharp_zero() {
+    // Mirrors the shader's admission and max-of-four XZ distances. The depth
+    // values are reverse-Z; center water depth is 0.5 in this fixture.
+    let footprint = |uv: f32, span: f32, raw: [f32; 4], distances: [f32; 4]| {
+        if span <= 1.0 || uv <= 1.0 / span || uv >= 1.0 - 1.0 / span {
+            return None;
+        }
+        let mut maximum = 0.0_f32;
+        for (depth, distance) in raw.into_iter().zip(distances) {
+            if !(depth > 0.0 && depth < 0.5) || !distance.is_finite() {
+                return None;
+            }
+            maximum = maximum.max(distance);
+        }
+        (maximum > 0.0 && maximum < 1e20).then_some(maximum)
+    };
+    assert_eq!(
+        footprint(0.5, 100.0, [0.2; 4], [0.1, 0.4, 0.3, 0.2]),
+        Some(0.4)
+    );
+    for index in 0..4 {
+        for invalid in [0.0, -0.1, 0.5, 0.6, f32::NAN] {
+            let mut depths = [0.2; 4];
+            depths[index] = invalid;
+            assert_eq!(footprint(0.5, 100.0, depths, [0.1; 4]), None);
+        }
+    }
+    for uv in [0.0, 0.01, 0.99, 1.0] {
+        assert_eq!(footprint(uv, 100.0, [0.2; 4], [0.1; 4]), None);
+    }
+    assert_eq!(footprint(0.5, 1.0, [0.2; 4], [0.1; 4]), None);
+    for distances in [[0.0; 4], [f32::NAN; 4], [f32::INFINITY; 4], [1e20; 4]] {
+        assert_eq!(footprint(0.5, 100.0, [0.2; 4], distances), None);
+    }
+}
