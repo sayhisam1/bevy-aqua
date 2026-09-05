@@ -1,8 +1,11 @@
 # bevy-aqua-reflect
 
 Planar scene reflections for Aqua. `AquaReflectPlugin` maintains at most two
-`Rgba16Float` mirror views for the nearest visible water
-levels. Add `ReflectedInWater` to terrain, cloud, and large static-mesh
+`Rgba16Float` mirror views for distinct eligible water levels below the camera.
+The ocean has priority; bounded bodies are ranked by center distance in world XZ.
+Selection does not test the camera frustum, so an offscreen body can occupy a
+mirror slot. This is a bounded selection heuristic, not a visibility guarantee.
+Add `ReflectedInWater` to terrain, cloud, and large static-mesh
 entities that should appear in the water. Directional lights are included
 automatically. Aqua falls back to its environment cubemap outside a mirror
 view.
