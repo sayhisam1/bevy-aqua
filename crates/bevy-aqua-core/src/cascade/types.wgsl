@@ -21,6 +21,7 @@ struct CameraDepthPath {
 
 struct CameraDepthDebug {
     path_length: f32,
+    refracted_path_length: f32,
     screen_uv: vec2<f32>,
     refracted_uv: vec2<f32>,
     refracted_sample_valid: bool,
