@@ -7,6 +7,9 @@
 
 use bevy::{asset::embedded_asset, prelude::*};
 
+#[cfg(test)]
+mod smith_tests;
+
 #[derive(Resource)]
 struct ShaderLibraries {
     _handles: Vec<Handle<Shader>>,
