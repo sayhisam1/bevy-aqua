@@ -187,14 +187,82 @@ fn wgsl_projection_and_metric_reconstruction_match_cpu_contracts() {
     );
 }
 
+// Function-local order checks keep sampling guards from matching another path.
+fn shader_function(name: &str) -> String {
+    let marker = format!("fn {name}(");
+    let (_, tail) = OPTICS.split_once(&marker).expect("WGSL function missing");
+    compact(tail.split("\nfn ").next().unwrap())
+}
+
+fn assert_in_order(source: &str, fragments: &[&str]) {
+    let mut remaining = source;
+    for fragment in fragments {
+        let fragment = compact(fragment);
+        let (_, tail) = remaining
+            .split_once(&fragment)
+            .unwrap_or_else(|| panic!("WGSL ordered contract changed: {fragment}"));
+        remaining = tail;
+    }
+}
+
 #[test]
 fn wgsl_beauty_gates_and_attenuates_the_accepted_path() {
-    assert_shader_contains(
-        "if depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON {",
+    let beauty = shader_function("beauty_transmission");
+    // Keep negated positive comparisons: <= / >= would admit NaN paths.
+    assert_in_order(
+        &beauty,
+        &[
+            "if !(depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON) { return scatter_colour; }",
+            "let depth_debug = camera_depth_debug_from_path(in, normal, depth_path);",
+            "let use_refraction = depth_debug.refracted_sample_valid; let water_path = select(depth_debug.path_length, depth_debug.refracted_path_length, use_refraction,);",
+            "let extinction = invocation_extinction() * shallow_extinction_scale;",
+            "let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));",
+            "if !(minimum_extinction * water_path < TRANSMISSION_OPAQUE_OPTICAL_DEPTH) { return scatter_colour; }",
+            "let background_uv = select(depth_debug.screen_uv, depth_debug.refracted_uv, use_refraction,);",
+            "let scene_colour = opaque_background(background_uv);",
+            "let lit_scene = illuminate_bed(scene_colour, in, medium, primary);",
+            "let alpha = 1.0 - exp(-extinction * water_path); return mix(lit_scene, scatter_colour, alpha);",
+        ],
     );
-    assert_shader_contains(
-        "let use_refraction = depth_debug.refracted_sample_valid; let water_path = select(depth_debug.path_length, depth_debug.refracted_path_length, use_refraction,); if minimum_extinction * water_path < TRANSMISSION_OPAQUE_OPTICAL_DEPTH {",
+    assert_eq!(beauty.matches("camera_depth_debug_from_path(").count(), 1);
+    assert_eq!(beauty.matches("opaque_background(").count(), 1);
+    assert!(!beauty.contains("camera_depth_path("));
+}
+
+#[test]
+fn wgsl_transmission_routes_modes_before_sampling_and_reuses_foam_depth() {
+    let resolve = shader_function("resolve_transmission");
+    assert_in_order(
+        &resolve,
+        &[
+            "let is_diagnostic = mode >= DEBUG_MODE_WATER_PATH && mode <= DEBUG_MODE_SEA_FLOOR;",
+            "if mode != DEBUG_MODE_BEAUTY && !is_diagnostic { return TransmissionState(scatter_colour, vec4(0.0), false); }",
+            "var shared_depth_path = foam.depth_path; if !foam.has_depth_path { shared_depth_path = camera_depth_path(in); }",
+            "if mode == DEBUG_MODE_BEAUTY { let body = beauty_transmission(in, normal, scatter_colour, medium, primary, shared_depth_path); return TransmissionState(body, vec4(0.0), false); }",
+            "let depth_debug = camera_depth_debug_from_path(in, normal, shared_depth_path);",
+            "if mode == DEBUG_MODE_WATER_PATH {",
+            "return TransmissionState(body, vec4(vec3(path), 1.0), true);",
+            "if mode == DEBUG_MODE_REFRACTION_VALIDITY {",
+            "return TransmissionState(body, output, true);",
+            "let refraction_enabled = mode == DEBUG_MODE_TRANSMISSION || mode == DEBUG_MODE_BEER_LAMBERT || mode == DEBUG_MODE_SEA_FLOOR;",
+            "let use_refraction = refraction_enabled && depth_debug.refracted_sample_valid;",
+            "let background_uv = select(depth_debug.screen_uv, depth_debug.refracted_uv, use_refraction,);",
+            "let scene_colour = opaque_background(background_uv);",
+            "if mode == DEBUG_MODE_TRANSMISSION || mode == DEBUG_MODE_UNREFRACTED { return TransmissionState(body, vec4(scene_colour, 1.0), true); }",
+            "let lit_scene = illuminate_bed(scene_colour, in, medium, primary);",
+            "let water_path = select(depth_debug.path_length, depth_debug.refracted_path_length, use_refraction,);",
+            "let alpha = 1.0 - exp(-invocation_extinction() * water_path);",
+            "body = mix(lit_scene, scatter_colour, alpha);",
+            "if mode == DEBUG_MODE_BEER_LAMBERT { return TransmissionState(body, vec4(body, 1.0), true); }",
+            "return TransmissionState(body, vec4(0.0), false);",
+        ],
     );
-    assert_shader_contains("let alpha = 1.0 - exp(-extinction * water_path);");
-    assert_shader_contains("let alpha = 1.0 - exp(-invocation_extinction() * water_path);");
+    assert_eq!(resolve.matches("camera_depth_path(").count(), 1);
+    assert_eq!(resolve.matches("camera_depth_debug_from_path(").count(), 1);
+    assert_eq!(resolve.matches("beauty_transmission(").count(), 1);
+    assert_eq!(resolve.matches("opaque_background(").count(), 1);
+    // Diagnostics must not inherit beauty's opacity or missing-background gates.
+    assert!(!resolve.contains("TRANSMISSION_OPAQUE_OPTICAL_DEPTH"));
+    assert!(!resolve.contains("has_background"));
+    assert!(!resolve.contains("shallow_extinction_scale"));
 }
