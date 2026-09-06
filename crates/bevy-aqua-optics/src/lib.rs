@@ -22,3 +22,6 @@ pub fn add_shader(app: &mut App) {
         _handles: vec![server.load("embedded://bevy_aqua_optics/optics.wgsl")],
     });
 }
+
+#[cfg(test)]
+mod refraction_tests;
