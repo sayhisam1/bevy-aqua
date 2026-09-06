@@ -230,17 +230,13 @@ See [`examples/README.md`](examples/README.md) for the full command list.
 Refraction validates one opaque depth texel, while transmission color uses linear
 filtering. At a foreground silhouette, a neighboring above-water opaque texel can
 therefore contribute color even when `RefractionValidity` accepts the sample.
-This has been reproduced at full resolution with a frozen analytic ocean.
 Viewport-edge color clamping does not prevent this interior silhouette case.
-
-A conservative filtered-footprint rejection trial was not shipped. Its address
-revisions exposed precision and interpolation regressions. An exact-zero special
-case restored the tested controls, but native near-zero coverage and a complete,
-matched performance check remained unresolved. The existing depth admission and
-linear color sampler are retained; `RefractionValidity` is not proof that every
-filtered color contributor lies behind the water.
+`RefractionValidity` is not proof that every filtered color contributor lies
+behind the water.
 
 ## Lighting appearance compatibility
+
+See [migration notes](MIGRATION.md) for public API and custom uniform changes.
 
 Water lighting retains resolved wave-normal slopes in both near and far shading.
 This differs from the former GodotOceanWaves-style exponential lighting-normal

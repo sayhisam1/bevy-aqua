@@ -50,13 +50,6 @@ fn foam_current_uses_distinct_source_and_history_coordinates() {
         .next()
         .unwrap();
     assert!(!density.contains("advected_world"));
-    let world = Vec2::new(11.0, -4.0);
-    let flow = Vec2::new(2.0, -1.0);
-    let wave_time = 3.0;
-    assert_eq!(world - flow * wave_time, Vec2::new(5.0, -1.0));
-    assert_eq!(world - flow * 0.0, world); // layout-only dispatch
-    let dt = STEP_SECONDS;
-    assert!(((world - flow * dt) + flow * dt - world).length() < 1e-5);
 }
 
 #[test]
@@ -85,9 +78,4 @@ fn shoreline_depth_keeps_dry_bed_signed_until_wave_height_is_added() {
     assert!(shader.contains("bed_water_depth(world_xz + center.xz) + center.y"));
     assert!(shader.contains("let shore_source = wet * max("));
     assert!(shader.contains("select(0.0, clamp(density, 0.0, 1.0), depth > 0.0)"));
-    let signed_depth = |sea: f32, bed: f32, wave: f32| sea - bed + wave;
-    assert!(signed_depth(0.0, 0.4, 0.2) < 0.0); // still dry
-    assert!(signed_depth(0.0, 0.4, 0.6) > 0.0); // actual run-up
-    assert!(signed_depth(0.0, -0.4, -0.6) < 0.0); // exposed by trough
-    assert_eq!(signed_depth(0.0, 0.4, 0.4), 0.0);
 }

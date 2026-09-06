@@ -142,19 +142,53 @@ mod tests {
     #[test]
     fn launch_init_uses_vec3_properties_and_one_shared_random_draw() {
         let effect = spray_effect();
-        assert_eq!(effect.properties().iter().find(|p| p.name() == "normal").unwrap().default_value(), &Vec3::Y.into());
-        assert_eq!(effect.properties().iter().find(|p| p.name() == "current").unwrap().default_value(), &Vec3::ZERO.into());
+        assert_eq!(
+            effect
+                .properties()
+                .iter()
+                .find(|p| p.name() == "normal")
+                .unwrap()
+                .default_value(),
+            &Vec3::Y.into()
+        );
+        assert_eq!(
+            effect
+                .properties()
+                .iter()
+                .find(|p| p.name() == "current")
+                .unwrap()
+                .default_value(),
+            &Vec3::ZERO.into()
+        );
         let mut module = effect.module().clone();
         let property_layout = effect.property_layout();
         let particle_layout = effect.particle_layout();
-        let mut shader = ShaderWriter::new(ModifierContext::Init, &property_layout, &particle_layout);
+        let mut shader =
+            ShaderWriter::new(ModifierContext::Init, &property_layout, &particle_layout);
         // Position, age, lifetime precede the production velocity initializer.
-        effect.init_modifiers().nth(3).unwrap().apply(&mut module, &mut shader).unwrap();
+        effect
+            .init_modifiers()
+            .nth(3)
+            .unwrap()
+            .apply(&mut module, &mut shader)
+            .unwrap();
         assert_eq!(shader.main_code.matches("frand3()").count(), 1);
         assert_eq!(shader.main_code.matches("frand()").count(), 0);
-        assert!(shader.main_code.contains("properties[properties_array_index].normal"));
-        assert!(shader.main_code.contains("properties[properties_array_index].current"));
-        assert!(shader.main_code.contains("properties[properties_array_index].strength"));
+        assert!(
+            shader
+                .main_code
+                .contains("properties[properties_array_index].normal")
+        );
+        assert!(
+            shader
+                .main_code
+                .contains("properties[properties_array_index].current")
+        );
+        assert!(
+            shader
+                .main_code
+                .contains("properties[properties_array_index].strength")
+        );
     }
 
     #[test]

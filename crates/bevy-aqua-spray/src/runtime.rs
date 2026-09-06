@@ -388,11 +388,20 @@ mod tests {
         let (mut world, mut candidates) = fixture(1, 1);
         candidates[0].normal = emission_normal(Vec3::new(3.0, 4.0, 0.0));
         candidates[0].current = Vec3::new(-4.0, 0.0, 0.0);
-        let mut budget = Budget { tokens: 160.0, ..default() };
+        let mut budget = Budget {
+            tokens: 160.0,
+            ..default()
+        };
         dispatch(&mut world, candidates, &mut budget);
         let properties = world.query::<&EffectProperties>().single(&world).unwrap();
-        assert_eq!(properties.get_stored("normal"), Some(Vec3::new(0.6, 0.8, 0.0).into()));
-        assert_eq!(properties.get_stored("current"), Some(Vec3::new(-4.0, 0.0, 0.0).into()));
+        assert_eq!(
+            properties.get_stored("normal"),
+            Some(Vec3::new(0.6, 0.8, 0.0).into())
+        );
+        assert_eq!(
+            properties.get_stored("current"),
+            Some(Vec3::new(-4.0, 0.0, 0.0).into())
+        );
         assert_eq!(properties.get_stored("strength"), Some(0.75_f32.into()));
     }
 
@@ -507,7 +516,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod heading37_tests {
+mod heading_tests {
     use super::*;
     #[test]
     fn ordinary_rotations_keep_unrolled_yaw_at_vertical_pitch() {
@@ -516,25 +525,33 @@ mod heading37_tests {
                 let rotation = Quat::from_rotation_y(yaw.to_radians())
                     * Quat::from_rotation_x(pitch.to_radians());
                 let camera = GlobalTransform::from(Transform::from_rotation(rotation));
-                let actual = horizontal_heading(camera.forward().as_vec3(), camera.right().as_vec3());
-                let expected = (Quat::from_rotation_y(yaw.to_radians()) * Vec3::NEG_Z).xz().normalize();
-                assert!(actual.distance(expected) < 0.001, "yaw={yaw} pitch={pitch} actual={actual:?} expected={expected:?}");
+                let actual =
+                    horizontal_heading(camera.forward().as_vec3(), camera.right().as_vec3());
+                let expected = (Quat::from_rotation_y(yaw.to_radians()) * Vec3::NEG_Z)
+                    .xz()
+                    .normalize();
+                assert!(
+                    actual.distance(expected) < 0.001,
+                    "yaw={yaw} pitch={pitch} actual={actual:?} expected={expected:?}"
+                );
             }
         }
     }
 }
 
 #[cfg(test)]
-mod direction38_tests {
+mod direction_tests {
     use super::*;
     use bevy_aqua_core::{ResolvedWaterBody, RiverPath, RiverPoint, WaterShape};
 
     fn river() -> ResolvedWaterBody {
         let shape = WaterShape::River {
-            path: RiverPath { points: vec![
-                RiverPoint::new(Vec2::new(-5.0, 0.0), 4.0, 2.0),
-                RiverPoint::new(Vec2::new(5.0, 0.0), 4.0, 2.0),
-            ] },
+            path: RiverPath {
+                points: vec![
+                    RiverPoint::new(Vec2::new(-5.0, 0.0), 4.0, 2.0),
+                    RiverPoint::new(Vec2::new(5.0, 0.0), 4.0, 2.0),
+                ],
+            },
         };
         let transform = GlobalTransform::from(
             Transform::from_xyz(13.0, 7.0, -9.0)
@@ -559,16 +576,29 @@ mod direction38_tests {
         let body = river();
         let base = body.world_point(Vec2::ZERO);
         let lake = ResolvedWaterBody::resolve(
-            Entity::from_bits(3), &WaterShape::Circle { radius: 20.0 }, None,
+            Entity::from_bits(3),
+            &WaterShape::Circle { radius: 20.0 },
+            None,
             &GlobalTransform::from(Transform::from_xyz(base.x, 7.0, base.y)),
-        ).unwrap();
-        assert_eq!(inherited_current(base, &ResolvedWaterBodies::default()), Vec3::ZERO);
-        assert_eq!(inherited_current(base, &ResolvedWaterBodies(vec![lake, body])), Vec3::ZERO);
+        )
+        .unwrap();
+        assert_eq!(
+            inherited_current(base, &ResolvedWaterBodies::default()),
+            Vec3::ZERO
+        );
+        assert_eq!(
+            inherited_current(base, &ResolvedWaterBodies(vec![lake, body])),
+            Vec3::ZERO
+        );
     }
 
     #[test]
     fn normal_sanitization_preserves_orientation_not_just_upward_slopes() {
-        for invalid in [Vec3::ZERO, Vec3::splat(f32::NAN), Vec3::new(f32::INFINITY, 1.0, 0.0)] {
+        for invalid in [
+            Vec3::ZERO,
+            Vec3::splat(f32::NAN),
+            Vec3::new(f32::INFINITY, 1.0, 0.0),
+        ] {
             assert_eq!(emission_normal(invalid), Vec3::Y);
         }
         let slope = Vec3::new(0.6, 0.8, 0.0);

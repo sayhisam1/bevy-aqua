@@ -71,7 +71,11 @@ fn cascade_specs(layout: &lod::GpuLayout) -> Vec<BinSpec> {
             texel_width: cascade.texel_width,
             texture_res: cascade.texture_res,
             min_wavelength: 0.5 * cascade.max_wavelength,
-            // Leave the core/analytic octave metadata and all texture periods alone.
+            // Keep swell below one quarter of the periodic tile so its longest
+            // waves repeat at least four times, limiting tile-scale repetition.
+            // This exclusive cutoff must match fft_evolve.wgsl, fft_resolve.wgsl,
+            // and variance::spectral's long-band partition. Core/analytic octave
+            // metadata and texture periods stay unchanged.
             max_wavelength: if band == LOD_COUNT - 1 {
                 cascade.texel_width * cascade.texture_res / 4.0
             } else {

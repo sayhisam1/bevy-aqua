@@ -35,7 +35,8 @@ struct NearSurface {
     normal: vec3<f32>,
     lighting_normal: vec3<f32>,
     lighting_distance: f32,
-    lighting_normal_strength: f32,
+    // Amplitude retained by the far-tier detail fade; geometric slopes stay unchanged.
+    near_detail_weight: f32,
     filtered_detail_variance: f32,
 }
 
@@ -59,6 +60,8 @@ struct MediumState {
 struct FoamState {
     visible_density: f32,
     white_density: f32,
+    // Persistent density plus bank streaks before the roughness distance fade.
+    roughness_density: f32,
     white_mask: f32,
     depth_path: CameraDepthPath,
     has_depth_path: bool,

@@ -11,7 +11,9 @@ fn function<'a>(source: &'a str, name: &str) -> &'a str {
 #[test]
 fn resolved_normal_is_shared_without_extra_detail_sampling() {
     let near = function(OPTICS, "resolve_near_surface");
-    assert!(near.contains("let lighting_normal_strength = 1.0;"));
+    assert!(!near.contains("lighting_normal_strength"));
+    assert!(near.contains("vec3(full_slope.x, 1.0, full_slope.y)"));
+    assert!(near.contains("1.0 - far_tier,"));
     assert!(near.contains(
         "let lighting_distance = length(in.world_position.xz - view.world_position.xz);"
     ));
@@ -45,7 +47,7 @@ fn resolved_normal_is_shared_without_extra_detail_sampling() {
 fn both_endpoints_use_actual_roughness_inputs_and_one_far_call() {
     let far = function(OPTICS, "far_field_water");
     let body = function(MATERIAL, "shade_water_body");
-    let call = "unresolved_wave_roughness(\n        in.undisplaced_xz,\n        to_view,\n        in.sample_data.y,\n        near.lighting_normal_strength,\n        near.filtered_detail_variance,\n    )";
+    let call = "unresolved_wave_roughness(\n        in.undisplaced_xz,\n        to_view,\n        in.sample_data.y,\n        near.near_detail_weight,\n        near.filtered_detail_variance,\n    )";
     assert!(far.contains(call));
     assert!(body.contains(call));
     assert!(!far.contains("max(surface.reflection.w, 0.05)"));
@@ -75,23 +77,71 @@ fn both_endpoints_use_actual_roughness_inputs_and_one_far_call() {
 }
 
 #[test]
-fn unit_strength_removes_only_resolved_transfer_and_keeps_cap() {
+fn far_tier_transfers_removed_detail_energy_without_fading_wave_slopes() {
     let roughness = function(OPTICS, "unresolved_wave_roughness");
     for clause in [
-        "lighting_normal_strength * lighting_normal_strength",
-        "+ removed_fraction * resolved_variance",
-        "unresolved_variance += filtered_variance;",
-        "(1.0 - capillary_resolved * capillary_resolved)",
+        "let near_energy = near_detail_weight * near_detail_weight;",
+        "filtered_variance + (1.0 - near_energy) * detail_variance",
+        "(1.0 - near_energy * capillary_resolved * capillary_resolved)",
+        "surface.capillary.y * surface.capillary.y * ripple * ripple",
         "surface.reflection.y * grazing_boost",
         "return min(sqrt(max(slope_variance, 0.0)), surface.reflection.w);",
     ] {
         assert!(roughness.contains(clause));
     }
-    let wave_alpha = |u: f32, r: f32, s: f32| (u + (1.0 - s * s) * r).max(0.0).sqrt().min(0.28);
-    for resolved in [0.0, 0.01, 0.06, 0.3] {
-        assert_eq!(wave_alpha(0.0, resolved, 1.0), 0.0);
-        assert!((wave_alpha(0.01, resolved, 1.0) - 0.1).abs() < 1e-6);
-        assert_eq!(wave_alpha(0.2, resolved, 1.0), 0.28);
+    assert!(
+        !roughness
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|token| token == "resolved_variance")
+    );
+    // Unit-strength geometric waves contribute only their unresolved band energy.
+    // Detail energy must survive both mip filtering and the far-tier fade.
+    for ripple in [0.0_f32, 0.3, 1.0] {
+        let total = 0.04 * ripple * ripple;
+        for near in [0.0_f32, 0.25, 0.5, 1.0] {
+            for filtered_fraction in [0.0_f32, 0.4, 1.0] {
+                let energy = near * near;
+                let filtered = energy * total * filtered_fraction;
+                let unresolved = filtered + (1.0 - energy) * total;
+                let resolved = energy * total * (1.0 - filtered_fraction);
+                assert!((unresolved + resolved - total).abs() < 1e-7);
+                if near == 0.0 {
+                    assert_eq!(unresolved, total);
+                }
+            }
+            for capillary_resolved in [0.0_f32, 0.5, 1.0] {
+                let resolved = near * near * capillary_resolved * capillary_resolved * total;
+                let unresolved =
+                    total * (1.0 - near * near * capillary_resolved * capillary_resolved);
+                assert!((unresolved + resolved - total).abs() < 1e-7);
+            }
+        }
     }
-    assert!(wave_alpha(0.0, 0.06, 0.015) > 0.2);
+}
+
+#[test]
+fn foam_roughness_applies_distance_fade_once_and_includes_streaks() {
+    let prepare = function(MATERIAL, "prepare_surface_foam");
+    let body = function(MATERIAL, "shade_water_body");
+    assert!(prepare.contains("white_foam_density,\n        foam_density + streak,"));
+    assert!(body.contains("foam.roughness_density * 0.75,"));
+    assert!(!body.contains("foam.white_density * 0.75"));
+    assert!(body.contains(") * foam_distance_fade;"));
+    let smooth = |x: f32| {
+        let x = x.clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    };
+    for distance in [0.0_f32, 100.0, 300.0] {
+        let fade = (-distance * 0.0075).exp();
+        let raw_density = 0.8;
+        let repaired = smooth(raw_density * 0.75) * fade;
+        // At density 0.8, smoothstep receives 0.6 and returns 0.648.
+        assert!((repaired / fade - 0.648).abs() < 1e-6);
+        if distance > 0.0 {
+            let double_faded = smooth(raw_density * fade * 0.75) * fade;
+            assert!(double_faded < repaired);
+        }
+        let streak_only = smooth(0.5 * 0.75) * fade;
+        assert!(streak_only > 0.0);
+    }
 }

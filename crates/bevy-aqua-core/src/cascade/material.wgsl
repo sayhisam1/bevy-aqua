@@ -20,7 +20,7 @@
 
 #import aqua::cascade::{CREST_SSS_RANGE, CREST_SSS_UNCOMPRESSED, DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_FAR_TIER, DEBUG_MODE_FOAM, DEBUG_MODE_LIGHT_RADIANCE, DEBUG_MODE_REFLECTION, DEBUG_MODE_REFLECTION_FRACTION, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, DEBUG_MODE_WAVE_HEIGHT, LUMINANCE_EPSILON, LocalLightSample, MIN_NORMAL_Y, SAFE_LENGTH_SQUARED, advected_world, begin_invocation, capillary_resolved_weight, cascade_layout, effective_flow, far_tier_weight, field_params, godot_fresnel, invocation_extinction, invocation_ripple, invocation_river_state, invocation_scatter_scale, lod_count, owning_body, sample_displacement, sample_field_flow, sample_field_level, sample_planar_reflection, set_body_optics, set_effective_flow, set_effective_time, set_fragment_river, set_river_ripple, set_xz_footprint, snap_and_transition, invocation_sun_roughness, surface}
 
-#import aqua::waves::displace::{FFT_JONSWAP_SLOPE_VARIANCE, GERSTNER_SLOPE_VARIANCE, WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, crest_sss, detail_normal_sample, far_displacement, far_normal_cross, sample_fft_normal_cross}
+#import aqua::waves::displace::{WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, crest_sss, detail_normal_sample, far_displacement, far_normal_cross, sample_fft_normal_cross}
 
 #import aqua::foam::contract::FOAM_PATTERN_RESOLUTION
 #import aqua::foam::shade::{CREST_FOAM_NORMAL_STRENGTH, CREST_FOAM_SPECULAR_BOOST, INV_PI, CREST_FOAM_SPECULAR_FALLOFF, CREST_FOAM_WHITE_COLOR, foam_bubble_colour, local_foam_light, river_streak_coverage, sample_foam_density, surface_foam_mask}
@@ -28,7 +28,7 @@
 #import aqua::shore::water::{blended_water_depth}
 #import bevy_aqua_core::deform::{deform_current}
 #import bevy_aqua_core::material::{BodyLightingState, CameraDepthDebug, CameraDepthPath, FoamState, LocalLightingState, MediumState, NearSurface, PrimaryLightState, SurfaceVertexOutput, TransmissionState}
-#import aqua::light::incident::{GODOT_NORMAL_FADE_RATE, GODOT_NORMAL_MINIMUM_STRENGTH, GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, local_light_contribution, resolve_primary_light, safe_normalize, sample_diffuse_environment, sample_environment, sample_local_light, smith_masking_shadowing, strongest_incident_directional_light, view_direction}
+#import aqua::light::incident::{GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, local_light_contribution, resolve_primary_light, safe_normalize, sample_diffuse_environment, sample_environment, sample_local_light, smith_masking_shadowing, strongest_incident_directional_light, view_direction}
 #import aqua::optics::{camera_depth_path, deep_water_weight, empty_camera_depth_path, far_field_water, far_path_opaque, resolve_near_surface, resolve_transmission, sample_water_medium, unresolved_wave_roughness}
 
 @vertex
@@ -99,6 +99,7 @@ fn prepare_surface_foam(
     return FoamState(
         visible_foam_density,
         white_foam_density,
+        foam_density + streak,
         clamp(white_foam, 0.0, 1.0),
         shared_depth_path,
         has_shared_depth_path,
@@ -225,16 +226,17 @@ fn shade_water_body(
         in.undisplaced_xz,
         to_view,
         in.sample_data.y,
-        near.lighting_normal_strength,
+        near.near_detail_weight,
         near.filtered_detail_variance,
     );
     let view_alignment = clamp(dot(near.lighting_normal, to_view), 0.0, 1.0);
     let fresnel = godot_fresnel(view_alignment);
     let foam_distance_fade = exp(-near.lighting_distance * 0.0075);
+    // Use pre-fade density here; visible/white density already fades with distance.
     let foam_factor = smoothstep(
         0.0,
         1.0,
-        foam.white_density * 0.75,
+        foam.roughness_density * 0.75,
     ) * foam_distance_fade;
     let foam_roughness = (1.0 - fresnel) * foam_factor;
     let environment_roughness = clamp(

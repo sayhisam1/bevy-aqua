@@ -28,13 +28,12 @@ fn unresolved_wave_roughness(
     world_xz: vec2<f32>,
     to_view: vec3<f32>,
     lod_alpha: f32,
-    lighting_normal_strength: f32,
+    near_detail_weight: f32,
     filtered_detail_variance: f32,
 ) -> f32 {
     let footprint = screen_xz_footprint();
     let unresolved_wavelength = 2.0 * footprint;
     var unresolved_variance = 0.0;
-    var resolved_variance = 0.0;
     let spectral = surface.reflection.x > 0.5;
     let band_count = select(5u, 8u, spectral);
     for (var band = 0u; band < band_count; band++) {
@@ -56,33 +55,30 @@ fn unresolved_wave_roughness(
         );
         let band_variance = surface.wave_slope_variance[band / 4u][band % 4u];
         unresolved_variance += unresolved_fraction * band_variance;
-        resolved_variance += (1.0 - unresolved_fraction) * band_variance;
     }
 
     let lod_blend_energy = 2.0 * (
         (1.0 - lod_alpha) * (1.0 - lod_alpha) + lod_alpha * lod_alpha
     );
+    let ripple = invocation_ripple();
     let detail_variance = WAVE_NORMALS_SLOPE_VARIANCE
         * lod_blend_energy
         * surface.detail.y * surface.detail.y
-        * surface.detail.z * surface.detail.z;
-    let filtered_variance = min(filtered_detail_variance, detail_variance);
-    unresolved_variance += filtered_variance;
-    resolved_variance += detail_variance - filtered_variance;
+        * surface.detail.z * surface.detail.z
+        * ripple * ripple;
+    let near_energy = near_detail_weight * near_detail_weight;
+    // filtered_detail_variance already includes near_energy. Transfer the
+    // energy removed by the far-tier fade as well as the texture mip filter.
+    let filtered_variance = min(filtered_detail_variance, near_energy * detail_variance);
+    unresolved_variance += filtered_variance + (1.0 - near_energy) * detail_variance;
     let capillary_resolved = capillary_resolved_weight(world_xz);
     let capillary_variance = WAVE_NORMALS_SLOPE_VARIANCE
-        * surface.capillary.y * surface.capillary.y;
+        * surface.capillary.y * surface.capillary.y * ripple * ripple;
     unresolved_variance += capillary_variance
-        * (1.0 - capillary_resolved * capillary_resolved);
-    resolved_variance += capillary_variance
-        * capillary_resolved * capillary_resolved;
+        * (1.0 - near_energy * capillary_resolved * capillary_resolved);
 
-    // Keep the strength contract: resolved lighting slopes now use strength 1,
-    // so only footprint/detail/capillary unresolved variance broadens the lobe.
-    let removed_fraction = 1.0
-        - lighting_normal_strength * lighting_normal_strength;
-    var slope_variance = unresolved_variance
-        + removed_fraction * resolved_variance;
+    // Geometric wave slopes retain unit strength; only detail terms fade.
+    var slope_variance = unresolved_variance;
     let grazing_boost = mix(1.0, 1.5, 1.0 - abs(to_view.y));
     slope_variance *= surface.reflection.y * grazing_boost;
     return min(sqrt(max(slope_variance, 0.0)), surface.reflection.w);
@@ -131,7 +127,7 @@ fn far_field_water(
         in.undisplaced_xz,
         to_view,
         in.sample_data.y,
-        near.lighting_normal_strength,
+        near.near_detail_weight,
         near.filtered_detail_variance,
     );
     let reflection = reflect(-to_view, lighting_normal);
@@ -339,22 +335,16 @@ fn resolve_near_surface(
         );
     }
     let lighting_distance = length(in.world_position.xz - view.world_position.xz);
-    // Retain resolved lighting slopes; detail and capillary fades remain separate.
-    let lighting_normal_strength = 1.0;
     let full_slope = normal.xz / max(normal.y, MIN_NORMAL_Y);
     let lighting_normal = safe_normalize(
-        vec3(
-            full_slope.x * lighting_normal_strength,
-            1.0,
-            full_slope.y * lighting_normal_strength,
-        ),
+        vec3(full_slope.x, 1.0, full_slope.y),
         vec3(0.0, 1.0, 0.0),
     );
     return NearSurface(
         normal,
         lighting_normal,
         lighting_distance,
-        lighting_normal_strength,
+        1.0 - far_tier,
         filtered_detail_variance,
     );
 }
