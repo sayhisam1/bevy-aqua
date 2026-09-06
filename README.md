@@ -197,6 +197,16 @@ CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-server-runner \
 
 See [`examples/README.md`](examples/README.md) for the full command list.
 
+## Debug-mode migration (unreleased)
+
+Two `AquaDebug` variants have been removed:
+
+- Replace `ShallowComposite` with `Shaded`; both selected the same rendering path.
+- Replace `FoamDensityBilinear` with `FoamDensity` to inspect foam using its normal
+  reconstruction filter. The old bilinear-only comparison is no longer available.
+
+The normal foam filters and remaining diagnostic views are unchanged.
+
 ## AI disclosure
 
 This project was developed with assistance from AI coding agents.
