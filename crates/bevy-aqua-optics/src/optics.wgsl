@@ -152,7 +152,7 @@ fn far_field_water(
         body += lambertian * light_radiance * GODOT_WATER_ALBEDO;
         // Preserve broad SSS without near-only texture samples.
         let dot_nv = max(dot(lighting_normal, to_view), 2e-5);
-        let sss_light_mask = smith_masking_shadowing(surface.sun.y, dot_nv);
+        let sss_light_mask = smith_masking_shadowing(dot_nv, surface.sun.y);
         let sss_near = 0.5 * dot_nv * dot_nv;
         let sss_height = max(0.0, wave_height + 2.5)
             * pow(max(dot(light_direction, -to_view), 0.0), 4.0)
@@ -176,8 +176,8 @@ fn far_field_water(
         let halfway = safe_normalize(light_direction + to_view, lighting_normal);
         let dot_nl = max(dot(lighting_normal, light_direction), 2e-5);
         let dot_nv_sun = max(dot(lighting_normal, to_view), 2e-5);
-        let light_mask = smith_masking_shadowing(sun_roughness, dot_nv_sun);
-        let view_mask_sun = smith_masking_shadowing(sun_roughness, dot_nl);
+        let light_mask = smith_masking_shadowing(dot_nv_sun, sun_roughness);
+        let view_mask_sun = smith_masking_shadowing(dot_nl, sun_roughness);
         let distribution = ggx_distribution(
             clamp(dot(lighting_normal, halfway), 0.0, 1.0),
             sun_roughness,
