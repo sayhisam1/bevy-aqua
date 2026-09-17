@@ -178,9 +178,7 @@ fn wgsl_projection_and_metric_reconstruction_match_cpu_contracts() {
     assert_shader_contains(
         "let scene_distance = camera_eye_distance(result.screen_uv, scene_raw_depth); let surface_distance = length(in.world_position.xyz - view.world_position.xyz); result.path_length = max(scene_distance - surface_distance, 0.0);",
     );
-    assert_shader_contains(
-        "result.has_background = scene_raw_depth > 0.0;",
-    );
+    assert_shader_contains("result.has_background = scene_raw_depth > 0.0;");
     assert_shader_contains("result.path_length = path.path_length;");
     assert_shader_contains(
         "result.refraction_valid = refracted_raw_depth > 0.0 && refracted_raw_depth < in.position.z; if result.refraction_valid { result.uv = refracted_uv; let surface_distance = length(in.world_position.xyz - view.world_position.xyz); let scene_distance = camera_eye_distance(refracted_uv, refracted_raw_depth); result.path_length = max(scene_distance - surface_distance, 0.0);",
