@@ -3,7 +3,13 @@
 //! Run with `cargo run --example spectral_waves`. Browser instructions are in
 //! `examples/README.md`.
 
-use bevy::{core_pipeline::prepass::DepthPrepass, prelude::*};
+use bevy::{
+    camera::{Exposure, Hdr},
+    core_pipeline::prepass::DepthPrepass,
+    light::{Atmosphere, AtmosphereEnvironmentMapLight, atmosphere::ScatteringMedium},
+    pbr::AtmosphereSettings,
+    prelude::*,
+};
 use bevy_aqua::{AquaPlugin, Ocean, OceanWaves, SeaState, WaveModel};
 
 fn main() {
@@ -27,9 +33,19 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut scattering_media: ResMut<Assets<ScatteringMedium>>,
 ) {
+    // A clear color is only a background, not light that water can reflect.
+    commands.spawn(Atmosphere::earth(
+        scattering_media.add(ScatteringMedium::earth(256, 256)),
+    ));
     commands.spawn((
         Camera3d::default(),
+        Hdr,
+        // Preserve daylight highlight range before tonemapping.
+        Exposure { ev100: 12.0 },
+        AtmosphereSettings::default(),
+        AtmosphereEnvironmentMapLight::default(),
         DepthPrepass,
         Transform::from_xyz(20.0, 5.5, 24.0).looking_at(Vec3::new(0.0, 0.3, 0.0), Vec3::Y),
     ));

@@ -3,7 +3,13 @@
 //! Run with `cargo run --example debug_views`. Browser instructions are in
 //! `examples/README.md`.
 
-use bevy::{core_pipeline::prepass::DepthPrepass, prelude::*};
+use bevy::{
+    camera::{Exposure, Hdr},
+    core_pipeline::prepass::DepthPrepass,
+    light::{Atmosphere, AtmosphereEnvironmentMapLight, atmosphere::ScatteringMedium},
+    pbr::AtmosphereSettings,
+    prelude::*,
+};
 use bevy_aqua::{
     AquaDebug, AquaPlugin, AquaSettings, BedHeightMap, Ocean, OceanWaves, ReflectionMode, SeaState,
 };
@@ -77,7 +83,12 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut scattering_media: ResMut<Assets<ScatteringMedium>>,
 ) {
+    // The visible sky also supplies the water's reflected environment light.
+    commands.spawn(Atmosphere::earth(
+        scattering_media.add(ScatteringMedium::earth(256, 256)),
+    ));
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(128.0, 128.0))),
         MeshMaterial3d(materials.add(Color::srgb(0.46, 0.38, 0.2))),
@@ -86,6 +97,10 @@ fn setup(
     ));
     commands.spawn((
         Camera3d::default(),
+        Hdr,
+        Exposure { ev100: 12.0 },
+        AtmosphereSettings::default(),
+        AtmosphereEnvironmentMapLight::default(),
         DepthPrepass,
         Transform::from_xyz(-18.0, 13.0, 36.0).looking_at(Vec3::new(12.0, 0.0, 0.0), Vec3::Y),
     ));
@@ -105,10 +120,12 @@ fn setup(
             ..default()
         },
         TextColor(Color::WHITE),
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.8)),
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(24.0),
             top: Val::Px(20.0),
+            padding: UiRect::all(Val::Px(8.0)),
             ..default()
         },
     ));

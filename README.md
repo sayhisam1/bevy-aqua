@@ -49,27 +49,36 @@ are not yet verified.
 ## Quick start
 
 ```rust
-use bevy::{core_pipeline::prepass::DepthPrepass, prelude::*};
+use bevy::{
+    camera::{Exposure, Hdr},
+    core_pipeline::prepass::DepthPrepass,
+    light::{Atmosphere, AtmosphereEnvironmentMapLight, atmosphere::ScatteringMedium},
+    pbr::AtmosphereSettings,
+    prelude::*,
+};
 use bevy_aqua::{AquaPlugin, Ocean};
 
 fn main() {
     App::new()
         .insert_resource(Ocean::default())
         .add_plugins((DefaultPlugins, AquaPlugin))
-        .add_systems(Startup, |mut commands: Commands| {
+        .add_systems(Startup, |mut commands: Commands,
+                              mut media: ResMut<Assets<ScatteringMedium>>| {
+            commands.spawn(Atmosphere::earth(media.add(ScatteringMedium::earth(256, 256))));
             commands.spawn((
                 Camera3d::default(),
+                Hdr,
+                Exposure { ev100: 12.0 },
+                AtmosphereSettings::default(),
+                AtmosphereEnvironmentMapLight::default(),
                 DepthPrepass,
                 Transform::from_xyz(24.0, 12.0, 32.0)
                     .looking_at(Vec3::ZERO, Vec3::Y),
             ));
             commands.spawn((
-                DirectionalLight::default(),
+                DirectionalLight { illuminance: 16_000.0, ..default() },
                 Transform::from_rotation(Quat::from_euler(
-                    EulerRot::XYZ,
-                    -0.8,
-                    -0.6,
-                    0.0,
+                    EulerRot::XYZ, -0.8, -0.6, 0.0,
                 )),
             ));
         })
@@ -80,6 +89,12 @@ fn main() {
 Insert one `Ocean` resource. `Ocean::level` sets the global sea level. Remove
 the resource for bounded-water-only worlds. One active `Camera3d` is the
 supported view path.
+
+Use HDR and an explicit camera exposure when lighting water with daylight-level
+illuminance. The examples use EV100 12; tune exposure for your scene rather than
+changing the water's light response. A `ClearColor` only paints the background:
+it does not light the water or supply a reflected sky. Provide an environment
+map, or use `AtmosphereEnvironmentMapLight` with an atmosphere as above.
 
 ## Configuration
 

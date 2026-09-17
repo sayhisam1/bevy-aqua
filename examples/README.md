@@ -3,6 +3,12 @@
 Every example is a fixed visual scene with no command-line options or external
 assets. The same source runs natively and with browser WebGPU.
 
+All scenes use an HDR camera with explicit exposure and an atmospheric sky that
+also supplies environment lighting. This keeps daylight highlights in range and
+gives the water a sky to reflect. The camera exposure is a scene setting, not a
+water-brightness multiplier. Diagnostic views retain their existing meanings;
+`debug_views` uses a dark label background for readability against the sky.
+
 | Name | Visual focus | Expected look | Try online |
 |---|---|---|---|
 | `ocean` | Minimal analytic ocean | <img src="../docs/images/examples/ocean.jpg" alt="ocean example" width="260"> | [Launch](https://sayhisam1.github.io/bevy-aqua/ocean/) |
