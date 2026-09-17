@@ -246,10 +246,13 @@ also feeds the existing subsurface-light mask; it is an appearance setting, not 
 physically calibrated water parameter. Explicit per-body `sun_roughness` values
 still override the global floor; negative values inherit it.
 
-The wave-roughness cap, Fresnel model, and separate detail, capillary, and foam
-fades are unchanged. Footprint-based roughness and
-detail mip filtering remain; geometric/FFT normals are not fully convolved over
-each pixel footprint. This is not a guarantee of alias-free rendering.
+The wave-roughness cap, Fresnel model, and foam fade are unchanged. Detail and
+capillary slopes still fade toward the far tier, but their removed energy now
+moves into unresolved roughness instead of disappearing. Body scatter scaling
+also applies in the far tier, and transmissive accepted paths remain on near
+shading. Footprint-based roughness and detail mip filtering remain;
+geometric/FFT normals are not fully convolved over each pixel footprint. This
+is not a guarantee of alias-free rendering.
 
 ## Debug-mode migration (unreleased)
 

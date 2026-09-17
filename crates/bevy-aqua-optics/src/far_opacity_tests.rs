@@ -67,7 +67,7 @@ fn shallow_beauty_scale_changes_opacity_and_channel_selection() {
     // R is the authored minimum, but G becomes the scaled minimum.
     assert!((minimum([0.1, 0.11, 0.2], 0.0) - 0.0462).abs() < 1e-7);
     let gate = function(OPTICS, "far_path_opaque");
-    let transmission = function(OPTICS, "resolve_transmission");
+    let transmission = function(OPTICS, "beauty_transmission");
     if OPTICS.contains("fn beauty_extinction(") {
         let helper = function(OPTICS, "beauty_extinction");
         assert!(
@@ -110,10 +110,7 @@ fn accepted_refraction_not_raw_depth_controls_gate() {
             "minimum_extinction * water_path >= TRANSMISSION_OPAQUE_OPTICAL_DEPTH",
         ],
     );
-    let beauty = function(OPTICS, "resolve_transmission")
-        .split("} else if mode == DEBUG_MODE_BEAUTY {")
-        .nth(1)
-        .unwrap();
+    let beauty = function(OPTICS, "beauty_transmission");
     ordered(
         beauty,
         &[
@@ -143,14 +140,12 @@ fn no_background_and_zero_path_preserve_existing_contract() {
             "camera_depth_debug_from_path(",
         ],
     );
-    let beauty = function(OPTICS, "resolve_transmission")
-        .split("} else if mode == DEBUG_MODE_BEAUTY {")
-        .nth(1)
-        .unwrap();
+    let beauty = function(OPTICS, "beauty_transmission");
     ordered(
         beauty,
         &[
-            "if depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON {",
+            "if !(depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON) {",
+            "return scatter_colour;",
             "camera_depth_debug_from_path(",
             "opaque_background(",
         ],
@@ -195,11 +190,10 @@ fn raw_depth_cache_survives_foam_and_rejection_reconstructs_near_normal() {
         function(OPTICS, "resolve_transmission"),
         &[
             "var shared_depth_path = foam.depth_path;",
-            "var has_shared_depth_path = foam.has_depth_path;",
-            "} else if mode == DEBUG_MODE_BEAUTY {",
-            "if !has_shared_depth_path {",
+            "if !foam.has_depth_path {",
             "shared_depth_path = camera_depth_path(in);",
-            "let depth_path = shared_depth_path;",
+            "if mode == DEBUG_MODE_BEAUTY {",
+            "beauty_transmission(in, normal, scatter_colour, medium, primary, shared_depth_path)",
         ],
     );
     // Only raw depth is shared. Accepted refracted depth must be recomputed with the restored normal.

@@ -28,7 +28,7 @@
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
 #import bevy_aqua_core::deform::{deform_current}
 #import bevy_aqua_core::material::{BodyLightingState, CameraDepthDebug, CameraDepthPath, FoamState, LocalLightingState, MediumState, NearSurface, PrimaryLightState, SurfaceVertexOutput, TransmissionState}
-#import aqua::light::incident::{GODOT_NORMAL_FADE_RATE, GODOT_NORMAL_MINIMUM_STRENGTH, GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, local_light_contribution, resolve_primary_light, safe_normalize, sample_diffuse_environment, sample_environment, sample_local_light, smith_masking_shadowing, strongest_incident_directional_light, view_direction}
+#import aqua::light::incident::{GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, local_light_contribution, resolve_primary_light, safe_normalize, sample_diffuse_environment, sample_environment, sample_local_light, smith_masking_shadowing, strongest_incident_directional_light, view_direction}
 #import aqua::optics::{camera_depth_path, deep_water_weight, empty_camera_depth_path, far_field_water, far_path_opaque, resolve_near_surface, resolve_transmission, sample_water_medium, unresolved_wave_roughness}
 
 @vertex
@@ -226,7 +226,7 @@ fn shade_water_body(
         in.undisplaced_xz,
         to_view,
         in.sample_data.y,
-        near.lighting_normal_strength,
+        near.near_detail_weight,
         near.filtered_detail_variance,
     );
     let view_alignment = clamp(dot(near.lighting_normal, to_view), 0.0, 1.0);
