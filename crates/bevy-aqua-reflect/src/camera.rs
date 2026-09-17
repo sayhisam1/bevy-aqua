@@ -78,23 +78,22 @@ struct Scene<'w, 's> {
 }
 
 pub(super) fn add(app: &mut App) {
-    app.init_resource::<Mirrors>()
-        .add_systems(
-            PostUpdate,
-            (
-                include_marked,
-                remove_mirror_atmosphere.before(sync_mirrors),
-                sync_mirror_environment
-                    .after(sync_mirrors)
-                    .before(CameraUpdateSystems),
-                (reset_mirror_activity, sync_mirrors)
-                    .chain()
-                    .after(CascadeMaterialsUpdated)
-                    .after(TransformSystems::Propagate)
-                    .after(bevy_aqua_core::WaterBodiesResolved)
-                    .before(CameraUpdateSystems),
-            ),
-        );
+    app.init_resource::<Mirrors>().add_systems(
+        PostUpdate,
+        (
+            include_marked,
+            remove_mirror_atmosphere.before(sync_mirrors),
+            sync_mirror_environment
+                .after(sync_mirrors)
+                .before(CameraUpdateSystems),
+            (reset_mirror_activity, sync_mirrors)
+                .chain()
+                .after(CascadeMaterialsUpdated)
+                .after(TransformSystems::Propagate)
+                .after(bevy_aqua_core::WaterBodiesResolved)
+                .before(CameraUpdateSystems),
+        ),
+    );
 }
 
 #[derive(Default)]
@@ -572,8 +571,13 @@ mod tests {
                 .run_system_once(
                     move |mut commands: Commands,
                           mut images: ResMut<Assets<Image>>,
-                          mut mirrors: ResMut<Mirrors>| {
-                        ensure_slots(&mut commands, &mut images, &mut mirrors, size);
+                          mut mirrors: ResMut<Mirrors>,
+                          cameras: Query<Entity, With<MirrorCamera>>| {
+                        let intact = mirrors
+                            .slots
+                            .iter()
+                            .all(|slot| cameras.contains(slot.entity));
+                        ensure_slots(&mut commands, &mut images, &mut mirrors, size, intact);
                     },
                 )
                 .unwrap();
@@ -604,7 +608,11 @@ mod tests {
                     let is_output = handle == &slot.image;
                     assert_eq!(
                         descriptor.mip_level_count,
-                        if is_output { size.x.max(size.y).ilog2() + 1 } else { 1 }
+                        if is_output {
+                            size.x.max(size.y).ilog2() + 1
+                        } else {
+                            1
+                        }
                     );
                     assert!(descriptor.usage.contains(
                         TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT
