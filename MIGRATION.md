@@ -1,5 +1,46 @@
 # Migration notes (unreleased)
 
+## Spray admission and surface motion
+
+The `spray` feature remains opt-in. Its public Rust API does not change. These
+fixes change which pending bursts survive a frame and how their particles move.
+
+### ELI5 handoff
+
+1. **Only retained bursts spend the shared budget.** Context: each CPU emitter
+   can hold one pending burst before Hanabi consumes it. What was wrong: more
+   candidates than emitters could wrap around and overwrite earlier pending
+   bursts, although every overwritten burst still spent particles and put its
+   probe on cooldown. Why: admission counted candidate decisions instead of the
+   emitter slots that actually retain them. Fix: reserve each emitter at most
+   once per dispatch, then charge tokens, screen coverage, cursor movement, and
+   cooldown only after a burst gets a slot. Visible result: crowded crests no
+   longer make spray look sparse by silently wasting the frame budget. Breaking:
+   no API change; burst choice and density can change in busy views. Admission
+   still means a retained CPU request, not proof of later GPU particle creation.
+
+2. **Near-vertical cameras keep a stable probe heading.** Context: spray probes
+   form a grid ahead of the active camera. What was wrong: looking almost
+   straight up or down made the camera-forward projection nearly zero, so tiny
+   floating-point changes could rotate or collapse the grid. Why: a near-zero
+   horizontal vector cannot provide a reliable heading. Fix: use the projected
+   forward direction normally, but recover yaw from camera-right near vertical
+   pitch and use a fixed fallback only if both are degenerate. Visible result:
+   the sampled spray region stays aimed with the camera yaw at extreme pitch.
+   Breaking: no API change; probe locations and resulting spray can change near
+   straight-up or straight-down views.
+
+3. **Spray launches with the queried surface and authored current.** Context:
+   particles should leave a tilted wave and moving river with that water's
+   motion. What was wrong: every burst launched around world-up and ignored
+   river flow. Why: the Hanabi effect only received strength. Fix: pass a safe
+   normalized `WaveSurface::normal` and the owning resolved body's finite flow
+   into each emitter; the shader adds current without scaling it by spray
+   strength. Flat still water keeps the old random launch distribution. Visible
+   result: spray leans away from sloped crests and drifts with authored river
+   current. Breaking: no public Rust API change; spray trajectories change on
+   sloped or flowing surfaces, and custom visual baselines may need updates.
+
 ## Water spatial consistency
 
 The public Rust API, bind groups, and uniform layouts do not change. These
