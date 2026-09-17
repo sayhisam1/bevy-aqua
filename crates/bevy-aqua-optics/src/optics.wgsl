@@ -642,6 +642,5 @@ fn resolve_transmission(
     if mode == DEBUG_MODE_BEER_LAMBERT {
         return TransmissionState(body, vec4(body, 1.0), true);
     }
-    }
     return TransmissionState(body, vec4(0.0), false);
 }

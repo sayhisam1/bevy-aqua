@@ -266,3 +266,26 @@ fn wgsl_transmission_routes_modes_before_sampling_and_reuses_foam_depth() {
     assert!(!resolve.contains("has_background"));
     assert!(!resolve.contains("shallow_extinction_scale"));
 }
+
+#[test]
+fn wgsl_braces_are_balanced() {
+    let mut depth = 0i32;
+    for (line_index, line) in OPTICS.lines().enumerate() {
+        let code = line.split("//").next().unwrap_or("");
+        for character in code.chars() {
+            match character {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    assert!(
+                        depth >= 0,
+                        "WGSL has an unmatched closing brace on line {}",
+                        line_index + 1
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(depth, 0, "WGSL has unmatched opening braces");
+}
