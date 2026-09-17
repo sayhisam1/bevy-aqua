@@ -82,22 +82,19 @@ fn centers_initialize_reconstruct_once_and_reuse_without_depth_reload() {
 #[test]
 fn selected_flag_keeps_uv_receiver_and_path_on_same_raw_or_refracted_lane() {
     let resolve = function("resolve_transmission");
-    let lanes: Vec<_> = resolve
-        .split("} else if mode == DEBUG_MODE_BEAUTY {")
-        .collect();
-    assert_eq!(lanes.len(), 2);
     ordered(
-        lanes[0],
+        resolve,
         &[
             "let refraction_enabled = mode == DEBUG_MODE_TRANSMISSION",
             "|| mode == DEBUG_MODE_BEER_LAMBERT",
             "|| mode == DEBUG_MODE_SEA_FLOOR;",
-            "let use_refraction = refraction_enabled\n            && depth_debug.refracted_sample_valid;",
+            "let use_refraction = refraction_enabled\n        && depth_debug.refracted_sample_valid;",
         ],
     );
-    assert!(lanes[1].contains("let use_refraction = depth_debug.refracted_sample_valid;"));
+    let beauty = function("beauty_transmission");
+    assert!(beauty.contains("let use_refraction = depth_debug.refracted_sample_valid;"));
     // Whitespace-normalized exact expressions, not merely presence of field names.
-    for lane in lanes {
+    for lane in [resolve, beauty] {
         let compact: String = lane.split_whitespace().collect();
         for clause in [
             "select(depth_debug.screen_uv,depth_debug.refracted_uv,use_refraction,)",

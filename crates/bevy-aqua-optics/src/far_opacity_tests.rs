@@ -193,7 +193,8 @@ fn raw_depth_cache_survives_foam_and_rejection_reconstructs_near_normal() {
             "if !foam.has_depth_path {",
             "shared_depth_path = camera_depth_path(in);",
             "if mode == DEBUG_MODE_BEAUTY {",
-            "beauty_transmission(in, normal, scatter_colour, medium, primary, shared_depth_path)",
+            "beauty_transmission(",
+            "in, normal, scatter_colour, medium, primary, shared_depth_path, source_slot,",
         ],
     );
     // Only raw depth is shared. Accepted refracted depth must be recomputed with the restored normal.
