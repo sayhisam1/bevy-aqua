@@ -192,6 +192,7 @@ mod tests {
             .insert((Msaa::Sample4, NormalPrepass, MotionVectorPrepass));
         frame(&mut world, &mut schedule);
         let key = world.resource::<ViewKeyPrepassCache>()[&retained];
+        assert_eq!(key.msaa_samples(), 4);
         assert!(key.contains(
             MeshPipelineKey::INVERT_CULLING
                 | MeshPipelineKey::NORMAL_PREPASS
@@ -223,6 +224,54 @@ mod tests {
                 .views
                 .contains(&retained)
         );
+    }
+    #[test]
+    fn mixed_views_dirty_only_the_mirror_when_inversion_changes() {
+        let (mut world, mut schedule, mirror, mirror_retained) = fixture(false);
+        let ordinary = world.spawn_empty().id();
+        let ordinary_retained = RetainedViewEntity::new(ordinary.into(), None, 0);
+        world.entity_mut(ordinary).insert((
+            ExtractedView {
+                retained_view_entity: ordinary_retained,
+                clip_from_view: Mat4::IDENTITY,
+                world_from_view: GlobalTransform::IDENTITY,
+                clip_from_world: None,
+                target_format: TextureFormat::Rgba16Float,
+                viewport: UVec4::new(0, 0, 64, 64),
+                color_grading: default(),
+                invert_culling: false,
+            },
+            Msaa::Off,
+            DepthPrepass,
+        ));
+        frame(&mut world, &mut schedule);
+        let dirty = &world.resource::<DirtySpecializations>().views;
+        assert_eq!(dirty.len(), 2);
+        assert!(dirty.contains(&mirror_retained));
+        assert!(dirty.contains(&ordinary_retained));
+        let ordinary_key = world.resource::<ViewKeyPrepassCache>()[&ordinary_retained];
+        assert!(!ordinary_key.contains(MeshPipelineKey::INVERT_CULLING));
+        frame(&mut world, &mut schedule);
+        clean(&world);
+
+        for desired in [false, true] {
+            world
+                .get_mut::<ExtractedView>(mirror)
+                .unwrap()
+                .invert_culling = desired;
+            frame(&mut world, &mut schedule);
+            let dirty = &world.resource::<DirtySpecializations>().views;
+            assert_eq!(dirty.len(), 1);
+            assert!(dirty.contains(&mirror_retained));
+            assert!(!dirty.contains(&ordinary_retained));
+            assert_eq!(inverted(&world, mirror_retained), desired);
+            assert_eq!(
+                world.resource::<ViewKeyPrepassCache>()[&ordinary_retained],
+                ordinary_key
+            );
+            frame(&mut world, &mut schedule);
+            clean(&world);
+        }
     }
     #[test]
     fn marker_removal_leaves_upstream_in_charge_and_no_scratch_state() {
