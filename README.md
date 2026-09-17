@@ -212,6 +212,14 @@ CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-server-runner \
 
 See [`examples/README.md`](examples/README.md) for the full command list.
 
+## Lighting appearance (unreleased)
+
+Cubemap-only oceans now use the same dielectric Fresnel response as planar
+reflections. Grazing-angle reflections can therefore be stronger than before.
+`WaterOptics::sun_roughness` controls direct-light highlight width, not the
+Fresnel curve; negative values still inherit the ocean setting. Existing scenes
+may need an appearance review, but public fields and GPU layouts are unchanged.
+
 ## Debug-mode migration (unreleased)
 
 Two `AquaDebug` variants have been removed:
