@@ -85,7 +85,7 @@ fn all_nine_shader_calls_pass_cosine_before_roughness() {
         (
             INCIDENT,
             [
-                "let light_mask = smith_masking_shadowing(dot_nv, surface.sun.y);",
+                "let light_mask = smith_masking_shadowing(dot_nv, invocation_sun_roughness());",
                 "let light_mask = smith_masking_shadowing(dot_nv, sun_roughness);",
                 "let view_mask = smith_masking_shadowing(max(dot_nl, 2e-5), sun_roughness);",
             ],
@@ -93,7 +93,7 @@ fn all_nine_shader_calls_pass_cosine_before_roughness() {
         (
             MATERIAL,
             [
-                "let sss_light_mask = smith_masking_shadowing(dot_nv, surface.sun.y);",
+                "let sss_light_mask = smith_masking_shadowing(dot_nv, invocation_sun_roughness());",
                 "let light_mask = smith_masking_shadowing(dot_nv, body_lighting.sun_roughness);",
                 "let view_mask = smith_masking_shadowing(dot_nl, body_lighting.sun_roughness);",
             ],
@@ -101,7 +101,7 @@ fn all_nine_shader_calls_pass_cosine_before_roughness() {
         (
             OPTICS,
             [
-                "let sss_light_mask = smith_masking_shadowing(dot_nv, surface.sun.y);",
+                "let sss_light_mask = smith_masking_shadowing(dot_nv, invocation_sun_roughness());",
                 "let light_mask = smith_masking_shadowing(dot_nv_sun, sun_roughness);",
                 "let view_mask_sun = smith_masking_shadowing(dot_nl, sun_roughness);",
             ],

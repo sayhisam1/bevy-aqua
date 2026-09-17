@@ -127,7 +127,7 @@ struct BodyParams {
     aabb_size: vec4<f32>,
     /// rgb: per-channel Beer-Lambert extinction in 1/m; w: optics enable.
     optics_a: vec4<f32>,
-    /// x: scatter-endpoint scale (deep-pool darkness); yzw reserved.
+    /// x: scatter-endpoint scale; y: direct-light roughness; zw reserved.
     optics_b: vec4<f32>,
 }
 
