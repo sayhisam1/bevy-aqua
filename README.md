@@ -113,7 +113,20 @@ bound the reduced-cost shading transition in metres. Far shading keeps sun
 and reflections while omitting depth, foam, and sampled subsurface detail.
 `reflections` selects the default planar mirror views or the cubemap-only path. Both use the same dielectric Fresnel response. Mark terrain or a
 scene root with `ReflectedInWater` to include it and its descendants in planar
-views. `caustics` controls the default procedural shallow-bed lighting; set it
+views.
+
+**Bevy 0.19.1 limitation:** planar mirrors can light double-sided
+`StandardMaterial` geometry with the wrong normal polarity. The mirrored camera
+reverses winding, but upstream material specialization swaps culling without
+changing the raster front-face convention. This has been reproduced with both
+forward and deferred reflection rendering; the ordinary view remains correct.
+Aqua does not currently patch that dependency. Disabling `double_sided` is not a
+general workaround: physical back faces then lose their intended lighting.
+A comprehensive repair must change front-face convention and culling together
+in Bevy. A workspace dependency patch must also be configured by downstream
+applications; it is not inherited from a library's manifest.
+
+`caustics` controls the default procedural shallow-bed lighting; set it
 to `None` to skip both texture samples. Hosts can update
 `CausticsSunVisibility` to fold cloud-shadow coverage into the direct sun.
 

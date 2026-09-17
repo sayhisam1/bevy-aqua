@@ -171,6 +171,7 @@ fn sample_planar_reflection(
     world_position: vec3<f32>,
     surface_level: f32,
     surface_normal: vec3<f32>,
+    roughness: f32,
 ) -> PlanarReflectionSample {
     if planar_reflections.view_count == 0u {
         return PlanarReflectionSample(vec3(0.0), 0.0);
@@ -182,6 +183,11 @@ fn sample_planar_reflection(
         index = 1u;
     }
     let view = planar_reflections.views[index];
+    // Match CPU level deduplication: another water elevation is not a
+    // valid approximation. Unrepresented bodies keep the environment.
+    if abs(surface_level - view.level) > 0.01 {
+        return PlanarReflectionSample(vec3(0.0), 0.0);
+    }
     let clip = view.view_projection * vec4(world_position, 1.0);
     if clip.w <= 0.0 {
         return PlanarReflectionSample(vec3(0.0), 0.0);
@@ -208,23 +214,30 @@ fn sample_planar_reflection(
         planar_reflections.distortion + max(half_texel.x, half_texel.y),
         projected_edge,
     );
-    var uv = projected_uv
-        + vec2(surface_normal.x, -surface_normal.z)
-            * planar_reflections.distortion * distortion_guard;
-    uv = clamp(uv, half_texel, vec2(1.0) - half_texel);
-    var sample = textureSampleLevel(
-        reflection_a,
-        reflection_sampler,
-        uv,
-        0.0,
+    // Depth-independent angular warp in the mirror's image basis, not a
+    // world-XZ swizzle. This is the homogeneous projection differential
+    // multiplied by clip.w; 0.5 converts NDC to UV and UV Y points down.
+    // Strength remains artistic, not a reflected-ray intersection distance.
+    let slope = vec3(surface_normal.x, 0.0, surface_normal.z);
+    let delta = view.view_projection * vec4(slope, 0.0);
+    let projected_slope = 0.5 * vec2(
+        delta.x - ndc.x * delta.w,
+        -delta.y + ndc.y * delta.w,
     );
+    var uv = projected_uv + projected_slope
+        * planar_reflections.distortion * distortion_guard;
+    uv = clamp(uv, half_texel, vec2(1.0) - half_texel);
+    // Approximate screen-space box footprint, NOT GGX convolution. Squared
+    // perceptual roughness controls a radius of up to 2.5% of target height.
+    // LOD selects prefiltered dense averages; no widely separated sparse taps.
+    let r = clamp(roughness, 0.0, 1.0);
+    let footprint = max(1.0, 2.0 * r * r * 0.025 * dimensions.y);
+    var level_count = textureNumLevels(reflection_a);
+    if index == 1u { level_count = textureNumLevels(reflection_b); }
+    let lod = clamp(log2(footprint), 0.0, f32(level_count - 1u));
+    var sample = textureSampleLevel(reflection_a, reflection_sampler, uv, lod);
     if index == 1u {
-        sample = textureSampleLevel(
-            reflection_b,
-            reflection_sampler,
-            uv,
-            0.0,
-        );
+        sample = textureSampleLevel(reflection_b, reflection_sampler, uv, lod);
     }
     // Exported alpha is depth-derived coverage, never deferred HDR alpha.
     // Unpremultiply once after filtering so silhouette edges retain their color.

@@ -78,58 +78,82 @@ struct Scene<'w, 's> {
 }
 
 pub(super) fn add(app: &mut App) {
-    app.init_resource::<Mirrors>()
-        .add_systems(Update, include_directional_lights)
-        .add_systems(
-            PostUpdate,
-            (
-                include_marked,
-                remove_mirror_atmosphere.before(sync_mirrors),
-                sync_mirror_environment
-                    .after(sync_mirrors)
-                    .before(CameraUpdateSystems),
-                sync_mirrors
-                    .after(CascadeMaterialsUpdated)
-                    .after(TransformSystems::Propagate)
-                    .after(bevy_aqua_core::WaterBodiesResolved)
-                    .before(CameraUpdateSystems),
-            ),
-        );
+    app.init_resource::<Mirrors>().add_systems(
+        PostUpdate,
+        (
+            include_marked,
+            remove_mirror_atmosphere.before(sync_mirrors),
+            sync_mirror_environment
+                .after(sync_mirrors)
+                .before(CameraUpdateSystems),
+            (reset_mirror_activity, sync_mirrors)
+                .chain()
+                .after(CascadeMaterialsUpdated)
+                .after(TransformSystems::Propagate)
+                .after(bevy_aqua_core::WaterBodiesResolved)
+                .before(CameraUpdateSystems),
+        ),
+    );
+}
+
+#[derive(Default)]
+struct ReflectionLayerOwnership {
+    owned: std::collections::HashSet<Entity>,
+    wanted: std::collections::HashSet<Entity>,
+    stack: Vec<Entity>,
 }
 
 fn include_marked(
     mut commands: Commands,
     roots: Query<Entity, With<ReflectedInWater>>,
+    lights: Query<Entity, With<DirectionalLight>>,
     hierarchy: Query<(Option<&RenderLayers>, Option<&Children>)>,
+    mut state: Local<ReflectionLayerOwnership>,
 ) {
-    let reflection = RenderLayers::layer(REFLECTION_LAYER);
-    let mut stack = Vec::new();
-    for root in &roots {
-        stack.push(root);
-        while let Some(entity) = stack.pop() {
-            let Ok((layers, children)) = hierarchy.get(entity) else {
-                continue;
-            };
-            if !layers.is_some_and(|layers| layers.intersects(&reflection)) {
-                commands
-                    .entity(entity)
-                    .insert(layers.cloned().unwrap_or_default().with(REFLECTION_LAYER));
-            }
-            if let Some(children) = children {
-                stack.extend(children.iter());
-            }
+    let ReflectionLayerOwnership {
+        owned,
+        wanted,
+        stack,
+    } = &mut *state;
+    wanted.clear();
+    stack.clear();
+    stack.extend(roots.iter());
+    while let Some(entity) = stack.pop() {
+        if !wanted.insert(entity) {
+            continue;
+        }
+        if let Ok((_, Some(children))) = hierarchy.get(entity) {
+            stack.extend(children.iter());
         }
     }
-}
-
-fn include_directional_lights(
-    mut commands: Commands,
-    lights: Query<(Entity, Option<&RenderLayers>), Added<DirectionalLight>>,
-) {
-    for (entity, layers) in &lights {
-        commands
-            .entity(entity)
-            .insert(layers.cloned().unwrap_or_default().with(REFLECTION_LAYER));
+    // Lights participate directly, not by claiming their whole hierarchy.
+    wanted.extend(lights.iter());
+    let reflection = RenderLayers::layer(REFLECTION_LAYER);
+    owned.retain(|entity| {
+        if wanted.contains(entity) {
+            return true;
+        }
+        if let Ok((Some(layers), _)) = hierarchy.get(*entity) {
+            if layers.intersects(&reflection) {
+                commands
+                    .entity(*entity)
+                    .insert(layers.clone().without(REFLECTION_LAYER));
+            }
+        }
+        false // Includes despawned entities: no stale ownership remains.
+    });
+    for &entity in wanted.iter() {
+        let Ok((layers, _)) = hierarchy.get(entity) else {
+            continue;
+        };
+        if !layers.is_some_and(|layers| layers.intersects(&reflection)) {
+            commands
+                .entity(entity)
+                .insert(layers.cloned().unwrap_or_default().with(REFLECTION_LAYER));
+            owned.insert(entity);
+        }
+        // Pre-existing host layer31 is not ours to revoke. Hosts that want
+        // permanent ownership must set that bit before opting into Aqua.
     }
 }
 
@@ -165,6 +189,14 @@ fn sync_mirror_environment(
     }
 }
 
+// Run before synchronization, including when its material/view prerequisites
+// are missing. Only fully validated synchronization can reactivate a mirror.
+fn reset_mirror_activity(mut cameras: Query<&mut Camera, With<MirrorCamera>>) {
+    for mut camera in &mut cameras {
+        camera.is_active = false;
+    }
+}
+
 fn sync_mirrors(
     mut commands: Commands,
     settings: Res<AquaSettings>,
@@ -176,13 +208,8 @@ fn sync_mirrors(
     let Some(mut material) = materials.get_mut(&data.material()) else {
         return;
     };
+    material.reflections.view_count = 0;
     let ReflectionMode::Planar { scale, distortion } = settings.reflections else {
-        material.reflections.view_count = 0;
-        for slot in &scene.mirrors.slots {
-            if let Ok((mut camera, ..)) = scene.mirror_cameras.get_mut(slot.entity) {
-                camera.is_active = false;
-            }
-        }
         return;
     };
     let Ok((camera, projection, camera_transform, exposure)) = scene.main_camera.single() else {
@@ -193,14 +220,36 @@ fn sync_mirrors(
         material.reflections.view_count = 0;
         return;
     };
-    let Some(main_size) = camera.physical_viewport_size() else {
+    if !camera.is_active
+        || !scale.is_finite()
+        || !distortion.is_finite()
+        || !camera_transform.to_matrix().inverse().is_finite()
+        || !projection.get_clip_from_view().is_finite()
+    {
+        return;
+    }
+    let Some(main_size) = camera
+        .physical_viewport_size()
+        .filter(|s| s.x > 0 && s.y > 0)
+    else {
         return;
     };
     let target_size = (main_size.as_vec2() * scale.clamp(MIN_TARGET_SCALE, MAX_TARGET_SCALE))
         .round()
         .as_uvec2()
         .max(UVec2::ONE);
-    let rebuilt = ensure_slots(&mut commands, &mut images, &mut scene.mirrors, target_size);
+    let cameras_intact = scene
+        .mirrors
+        .slots
+        .iter()
+        .all(|slot| scene.mirror_cameras.contains(slot.entity));
+    let rebuilt = ensure_slots(
+        &mut commands,
+        &mut images,
+        &mut scene.mirrors,
+        target_size,
+        cameras_intact,
+    );
     material.reflection_a = scene.mirrors.slots[0].image.clone();
     material.reflection_b = scene.mirrors.slots[1].image.clone();
     if rebuilt {
@@ -209,7 +258,7 @@ fn sync_mirrors(
     }
 
     let main_transform = camera_transform.compute_transform();
-    let levels = visible_levels(&scene, camera_transform.translation().xz());
+    let levels = visible_levels(&scene, camera_transform.translation());
     let count = levels.len();
     let mirror_order = camera.order.saturating_sub(1);
     for (index, slot) in scene.mirrors.slots.iter().enumerate() {
@@ -252,8 +301,10 @@ fn ensure_slots(
     images: &mut Assets<Image>,
     mirrors: &mut Mirrors,
     size: UVec2,
+    cameras_intact: bool,
 ) -> bool {
-    if mirrors.slots.len() == VIEW_LIMIT
+    if cameras_intact
+        && mirrors.slots.len() == VIEW_LIMIT
         && mirrors
             .slots
             .iter()
@@ -270,23 +321,25 @@ fn ensure_slots(
                     .get_mut(&slot.raw)
                     .expect("raw mirror image existence checked above")
                     .resize(extent);
-                images
+                // Resize must regenerate the mip count, not only the extent.
+                *images
                     .get_mut(&slot.image)
-                    .expect("mirror image existence checked above")
-                    .resize(extent);
+                    .expect("mirror image existence checked above") = reflection_mip_image(size);
             }
             mirrors.size = size;
         }
         return false;
     }
     for slot in mirrors.slots.drain(..) {
-        commands.entity(slot.entity).despawn();
+        // Hosts may already have despawned a slot; rebuild without queuing
+        // failing commands against its old generation.
+        commands.entity(slot.entity).try_despawn();
         images.remove(slot.image.id());
         images.remove(slot.raw.id());
     }
     mirrors.size = size;
     for _ in 0..VIEW_LIMIT {
-        let image = images.add(reflection_image(size));
+        let image = images.add(reflection_mip_image(size));
         let raw = images.add(reflection_image(size));
         let entity = commands
             .spawn((
@@ -315,14 +368,19 @@ fn ensure_slots(
     true
 }
 
-fn visible_levels(scene: &Scene, camera_xz: Vec2) -> Vec<f32> {
+fn visible_levels(scene: &Scene, camera_position: Vec3) -> Vec<f32> {
+    let camera_xz = camera_position.xz();
     let mut candidates = Vec::new();
     if let Some(ocean) = &scene.ocean {
-        candidates.push((0.0, ocean.level));
+        if usable_level(camera_position.y, ocean.level) {
+            candidates.push((0.0, ocean.level));
+        }
     }
     for body in &scene.bodies.0 {
         let (center, _) = body.extent();
-        candidates.push((center.distance_squared(camera_xz), body.level));
+        if usable_level(camera_position.y, body.level) {
+            candidates.push((center.distance_squared(camera_xz), body.level));
+        }
     }
     candidates.sort_by(|left, right| left.0.total_cmp(&right.0));
     let mut levels: Vec<f32> = Vec::with_capacity(VIEW_LIMIT);
@@ -338,6 +396,11 @@ fn visible_levels(scene: &Scene, camera_xz: Vec2) -> Vec<f32> {
         }
     }
     levels
+}
+
+// These cameras render above-surface reflection, not underwater optics.
+fn usable_level(camera_y: f32, level: f32) -> bool {
+    camera_y.is_finite() && level.is_finite() && camera_y - level > LEVEL_EPSILON_METRES
 }
 
 fn mirror_view(
@@ -371,11 +434,26 @@ fn reflection_image(size: UVec2) -> Image {
         TextureFormat::Rgba16Float,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
-    image.texture_descriptor.usage |=
-        TextureUsages::RENDER_ATTACHMENT | TextureUsages::STORAGE_BINDING;
+    image.texture_descriptor.usage |= TextureUsages::RENDER_ATTACHMENT;
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         mag_filter: ImageFilterMode::Linear,
         min_filter: ImageFilterMode::Linear,
+        ..default()
+    });
+    image
+}
+
+// The camera renders only to the single-level raw image. Water samples this
+// separate full-chain image; compute and clear use explicit one-level views.
+fn reflection_mip_image(size: UVec2) -> Image {
+    let mut image = reflection_image(size);
+    image.texture_descriptor.mip_level_count = size.x.max(size.y).max(1).ilog2() + 1;
+    image.texture_descriptor.usage |= TextureUsages::STORAGE_BINDING;
+    image.texture_view_descriptor = None; // Default sampled view spans ALL levels.
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        mipmap_filter: ImageFilterMode::Linear,
         ..default()
     });
     image
@@ -493,8 +571,13 @@ mod tests {
                 .run_system_once(
                     move |mut commands: Commands,
                           mut images: ResMut<Assets<Image>>,
-                          mut mirrors: ResMut<Mirrors>| {
-                        ensure_slots(&mut commands, &mut images, &mut mirrors, size);
+                          mut mirrors: ResMut<Mirrors>,
+                          cameras: Query<Entity, With<MirrorCamera>>| {
+                        let intact = mirrors
+                            .slots
+                            .iter()
+                            .all(|slot| cameras.contains(slot.entity));
+                        ensure_slots(&mut commands, &mut images, &mut mirrors, size, intact);
                     },
                 )
                 .unwrap();
@@ -522,15 +605,183 @@ mod tests {
                     assert_eq!(descriptor.size.width, size.x);
                     assert_eq!(descriptor.size.height, size.y);
                     assert_eq!(descriptor.format, TextureFormat::Rgba16Float);
-                    assert_eq!(descriptor.mip_level_count, 1);
+                    let is_output = handle == &slot.image;
+                    assert_eq!(
+                        descriptor.mip_level_count,
+                        if is_output {
+                            size.x.max(size.y).ilog2() + 1
+                        } else {
+                            1
+                        }
+                    );
                     assert!(descriptor.usage.contains(
-                        TextureUsages::TEXTURE_BINDING
-                            | TextureUsages::RENDER_ATTACHMENT
-                            | TextureUsages::STORAGE_BINDING
+                        TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT
                     ));
+                    if is_output {
+                        assert!(descriptor.usage.contains(TextureUsages::STORAGE_BINDING));
+                    }
                 }
             }
         }
+    }
+
+    #[test]
+    fn reflection_mip_descriptors_cover_odd_skinny_and_resized_targets() {
+        for (size, levels) in [
+            (UVec2::ONE, 1),
+            (UVec2::new(7, 5), 3),
+            (UVec2::new(1, 7), 3),
+            (UVec2::new(7, 1), 3),
+            (UVec2::new(1023, 687), 10),
+            (UVec2::new(1025, 687), 11),
+        ] {
+            let image = reflection_mip_image(size);
+            assert_eq!(image.texture_descriptor.mip_level_count, levels);
+            assert_eq!(image.texture_descriptor.size.width, size.x);
+            assert_eq!(image.texture_descriptor.size.height, size.y);
+            assert!(image.texture_view_descriptor.is_none());
+            assert!(image.data.is_none());
+            assert!(
+                image
+                    .texture_descriptor
+                    .usage
+                    .contains(TextureUsages::STORAGE_BINDING)
+            );
+            assert_eq!(reflection_image(size).texture_descriptor.mip_level_count, 1);
+            let ImageSampler::Descriptor(sampler) = image.sampler else {
+                panic!("explicit sampler");
+            };
+            assert_eq!(sampler.mipmap_filter, ImageFilterMode::Linear);
+        }
+    }
+
+    #[test]
+    fn planar_slope_projection_matches_uv_differential_across_camera_bases() {
+        let projection = PerspectiveProjection::default();
+        for yaw in [0.0_f32, 90.0, 180.0, 270.0] {
+            for pitch in [-30.0_f32, -5.0, 5.0] {
+                for roll in [-20.0_f32, 0.0, 20.0] {
+                    let main = Transform::from_xyz(0.0, 8.0, 0.0).with_rotation(Quat::from_euler(
+                        EulerRot::YXZ,
+                        yaw.to_radians(),
+                        pitch.to_radians(),
+                        roll.to_radians(),
+                    ));
+                    let (mirror, p) = mirror_view(&main, &projection, 0.0);
+                    let matrix = p.get_clip_from_view() * mirror.to_matrix().inverse();
+                    let point = mirror
+                        .to_matrix()
+                        .transform_point3(Vec3::new(1.0, -0.5, -25.0));
+                    let slope = Vec3::new(0.17, 0.0, -0.23);
+                    let clip = matrix * point.extend(1.0);
+                    let ndc = clip.truncate() / clip.w;
+                    let delta = matrix * slope.extend(0.0);
+                    let expected =
+                        0.5 * Vec2::new(delta.x - ndc.x * delta.w, -delta.y + ndc.y * delta.w);
+                    let uv = |p: Vec3| {
+                        let c = matrix * p.extend(1.0);
+                        c.xy() / c.w * Vec2::new(0.5, -0.5) + Vec2::splat(0.5)
+                    };
+                    let epsilon = 0.002;
+                    let finite = (uv(point + slope * clip.w * epsilon)
+                        - uv(point - slope * clip.w * epsilon))
+                        / (2.0 * epsilon);
+                    assert!(
+                        expected.distance(finite) < 0.0001,
+                        "yaw {yaw} pitch {pitch} roll {roll}: {expected:?} vs {finite:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reset_disables_owned_cameras_without_touching_main_views() {
+        let mut app = App::new();
+        app.add_systems(Update, reset_mirror_activity);
+        let mirror = app
+            .world_mut()
+            .spawn((Camera::default(), MirrorCamera))
+            .id();
+        let main = app.world_mut().spawn(Camera::default()).id();
+        for _ in 0..2 {
+            app.world_mut().get_mut::<Camera>(mirror).unwrap().is_active = true;
+            app.update();
+            assert!(!app.world().get::<Camera>(mirror).unwrap().is_active);
+            assert!(app.world().get::<Camera>(main).unwrap().is_active);
+        }
+    }
+
+    #[test]
+    fn mirror_level_requires_eye_above_mean_surface() {
+        assert!(usable_level(10.1, 10.0));
+        assert!(!usable_level(10.0, 10.0));
+        assert!(!usable_level(9.0, 10.0));
+        assert!(!usable_level(10.005, 10.0));
+        assert!(!usable_level(11.0, f32::NAN));
+        assert!(!usable_level(f32::INFINITY, 10.0));
+    }
+
+    #[test]
+    fn missing_mirror_entity_rebuilds_slots_and_releases_old_images() {
+        fn maintain(
+            mut commands: Commands,
+            mut images: ResMut<Assets<Image>>,
+            mut mirrors: ResMut<Mirrors>,
+            cameras: Query<Entity, With<MirrorCamera>>,
+        ) {
+            let intact = mirrors
+                .slots
+                .iter()
+                .all(|slot| cameras.contains(slot.entity));
+            ensure_slots(
+                &mut commands,
+                &mut images,
+                &mut mirrors,
+                UVec2::new(32, 17),
+                intact,
+            );
+        }
+        let mut app = App::new();
+        app.init_resource::<Mirrors>()
+            .init_resource::<Assets<Image>>()
+            .add_systems(Update, maintain);
+        app.update();
+        let old: Vec<_> = app
+            .world()
+            .resource::<Mirrors>()
+            .slots
+            .iter()
+            .map(|s| (s.entity, s.image.id(), s.raw.id()))
+            .collect();
+        app.world_mut().entity_mut(old[0].0).despawn();
+        app.update();
+        let new: Vec<_> = app
+            .world()
+            .resource::<Mirrors>()
+            .slots
+            .iter()
+            .map(|s| s.entity)
+            .collect();
+        assert_eq!(new.len(), VIEW_LIMIT);
+        for (entity, image, raw) in old {
+            assert!(app.world().get_entity(entity).is_err());
+            assert!(app.world().resource::<Assets<Image>>().get(image).is_none());
+            assert!(app.world().resource::<Assets<Image>>().get(raw).is_none());
+        }
+        for &entity in &new {
+            assert!(app.world().get::<MirrorCamera>(entity).is_some());
+        }
+        app.update();
+        assert_eq!(
+            new,
+            app.world()
+                .resource::<Mirrors>()
+                .slots
+                .iter()
+                .map(|s| s.entity)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -563,6 +814,76 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn removed_markers_and_reparented_children_release_only_owned_bits() {
+        let mut app = App::new();
+        app.add_systems(Update, include_marked);
+        let root = app
+            .world_mut()
+            .spawn((ReflectedInWater, RenderLayers::layer(7)))
+            .id();
+        let child = app
+            .world_mut()
+            .spawn((ChildOf(root), RenderLayers::layer(8)))
+            .id();
+        let host = app
+            .world_mut()
+            .spawn((ChildOf(root), RenderLayers::layer(31).with(9)))
+            .id();
+        app.update();
+        app.world_mut().entity_mut(child).remove::<ChildOf>();
+        app.update();
+        let layers = app.world().get::<RenderLayers>(child).unwrap();
+        assert_eq!(*layers, RenderLayers::layer(8));
+        app.world_mut()
+            .entity_mut(root)
+            .remove::<ReflectedInWater>();
+        app.update();
+        assert_eq!(
+            *app.world().get::<RenderLayers>(root).unwrap(),
+            RenderLayers::layer(7)
+        );
+        assert_eq!(
+            *app.world().get::<RenderLayers>(host).unwrap(),
+            RenderLayers::layer(31).with(9)
+        );
+    }
+
+    #[test]
+    fn nested_markers_keep_membership_and_removed_lights_release_it() {
+        let mut app = App::new();
+        app.add_systems(Update, include_marked);
+        let root = app.world_mut().spawn(ReflectedInWater).id();
+        let child = app
+            .world_mut()
+            .spawn((ChildOf(root), ReflectedInWater))
+            .id();
+        let light = app
+            .world_mut()
+            .spawn((DirectionalLight::default(), RenderLayers::layer(4)))
+            .id();
+        app.update();
+        app.world_mut()
+            .entity_mut(root)
+            .remove::<ReflectedInWater>();
+        app.world_mut()
+            .entity_mut(light)
+            .remove::<DirectionalLight>();
+        app.update();
+        assert!(
+            app.world()
+                .get::<RenderLayers>(child)
+                .unwrap()
+                .intersects(&RenderLayers::layer(31))
+        );
+        assert_eq!(
+            *app.world().get::<RenderLayers>(light).unwrap(),
+            RenderLayers::layer(4)
+        );
+        app.world_mut().entity_mut(root).despawn();
+        app.update(); // Despawned owned entries must not issue stale commands.
     }
 
     #[test]
