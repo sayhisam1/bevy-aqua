@@ -4,7 +4,8 @@
 #define_import_path bevy_aqua_core::deform
 
 #import bevy_pbr::{forward_io::Vertex, mesh_functions}
-#import aqua::cascade::{BodyParams, DEBUG_MODE_BEAUTY, DEBUG_MODE_FAR_TIER, MIN_NORMAL_Y, SAFE_LENGTH_SQUARED, begin_invocation, cascade_layout, effective_flow, far_tier_weight, field_params, lod_count, owning_body, sample_displacement, sample_field_flow, sample_field_level, set_effective_flow, set_effective_time, snap_and_transition, surface}
+#import bevy_aqua_core::waves_sample::sample_displacement
+#import aqua::cascade::{BodyParams, DEBUG_MODE_BEAUTY, DEBUG_MODE_FAR_TIER, MIN_NORMAL_Y, SAFE_LENGTH_SQUARED, advected_world, begin_invocation, cascade_layout, effective_flow, far_tier_weight, field_params, lod_count, lod_data, lod_sampler, owning_body, sample_field_flow, sample_field_level, set_effective_flow, set_effective_time, snap_and_transition, surface}
 #import aqua::waves::displace::{far_displacement, far_normal_cross, sample_fft_normal_cross}
 #import bevy_aqua_core::river::river_analytic_displacement
 
@@ -187,19 +188,32 @@ fn deform_current(vertex: Vertex, time: f32) -> DeformationResult {
         displacement = far_displacement(transitioned.xy);
         normal_cross = far_normal_cross(transitioned.xy);
     } else {
-        let near_displacement = sample_displacement(transitioned.xy, lod, sample_alpha);
+        let near_displacement = sample_displacement(
+            lod_data,
+            lod_sampler,
+            cascade_layout,
+            advected_world(transitioned.xy),
+            lod,
+            sample_alpha,
+        );
         displacement = near_displacement;
         if surface.reflection.x > 0.5 {
             normal_cross = sample_fft_normal_cross(transitioned.xy, lod, sample_alpha);
         } else {
             let texel_width = cascade_layout.cascades[lod].texel_width;
             let displacement_x = sample_displacement(
-                transitioned.xy + vec2(texel_width, 0.0),
+                lod_data,
+                lod_sampler,
+                cascade_layout,
+                advected_world(transitioned.xy + vec2(texel_width, 0.0)),
                 lod,
                 sample_alpha,
             );
             let displacement_z = sample_displacement(
-                transitioned.xy + vec2(0.0, texel_width),
+                lod_data,
+                lod_sampler,
+                cascade_layout,
+                advected_world(transitioned.xy + vec2(0.0, texel_width)),
                 lod,
                 sample_alpha,
             );

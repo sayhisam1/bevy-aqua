@@ -18,7 +18,7 @@
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
 
-#import aqua::cascade::{CREST_SSS_RANGE, CREST_SSS_UNCOMPRESSED, DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_FAR_TIER, DEBUG_MODE_FOAM, DEBUG_MODE_LIGHT_RADIANCE, DEBUG_MODE_REFLECTION, DEBUG_MODE_REFLECTION_FRACTION, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, DEBUG_MODE_WAVE_HEIGHT, LUMINANCE_EPSILON, LocalLightSample, MIN_NORMAL_Y, SAFE_LENGTH_SQUARED, advected_world, begin_invocation, capillary_resolved_weight, cascade_layout, effective_flow, far_tier_weight, field_params, godot_fresnel, invocation_extinction, invocation_ripple, invocation_river_state, invocation_scatter_scale, lod_count, owning_body, sample_displacement, sample_field_flow, sample_field_level, sample_planar_reflection, set_body_optics, set_effective_flow, set_effective_time, set_fragment_river, set_river_ripple, set_xz_footprint, snap_and_transition, surface}
+#import aqua::cascade::{CREST_SSS_RANGE, CREST_SSS_UNCOMPRESSED, DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_FAR_TIER, DEBUG_MODE_FOAM, DEBUG_MODE_LIGHT_RADIANCE, DEBUG_MODE_REFLECTION, DEBUG_MODE_REFLECTION_FRACTION, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, DEBUG_MODE_WAVE_HEIGHT, LUMINANCE_EPSILON, LocalLightSample, MIN_NORMAL_Y, SAFE_LENGTH_SQUARED, advected_world, begin_invocation, capillary_resolved_weight, cascade_layout, effective_flow, far_tier_weight, field_params, godot_fresnel, invocation_extinction, invocation_ripple, invocation_river_state, owning_body, sample_field_flow, sample_field_level, sample_planar_reflection, set_body_optics, set_effective_flow, set_effective_time, set_fragment_river, set_river_ripple, set_xz_footprint, snap_and_transition, surface}
 
 #import aqua::waves::displace::{FFT_JONSWAP_SLOPE_VARIANCE, GERSTNER_SLOPE_VARIANCE, WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, crest_sss, detail_normal_sample, far_displacement, far_normal_cross, sample_fft_normal_cross}
 
@@ -27,9 +27,9 @@
 
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
 #import bevy_aqua_core::deform::{deform_current}
-#import bevy_aqua_core::material::{BodyLightingState, CameraDepthDebug, CameraDepthPath, FoamState, LocalLightingState, MediumState, NearSurface, PrimaryLightState, SurfaceVertexOutput, TransmissionState}
+#import bevy_aqua_core::material::{BodyLightingState, CameraDepthPath, FoamState, LocalLightingState, MediumState, NearSurface, PrimaryLightState, SurfaceVertexOutput, TransmissionState}
 #import aqua::light::incident::{GODOT_NORMAL_FADE_RATE, GODOT_NORMAL_MINIMUM_STRENGTH, GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, local_light_contribution, resolve_primary_light, safe_normalize, sample_diffuse_environment, sample_environment, sample_local_light, smith_masking_shadowing, strongest_incident_directional_light, view_direction}
-#import aqua::optics::{camera_depth_path, deep_water_weight, empty_camera_depth_path, far_field_water, resolve_near_surface, resolve_transmission, sample_water_medium, unresolved_wave_roughness}
+#import aqua::optics::{camera_depth_path, deep_water_weight, empty_camera_depth_path, far_field_water, resolve_near_surface, resolve_transmission, sample_water_medium, shade_underside, unresolved_wave_roughness}
 
 @vertex
 fn vertex(vertex: Vertex) -> SurfaceVertexOutput {
@@ -110,13 +110,10 @@ fn directional_scatter(
     surface_lod: u32,
     near: NearSurface,
     primary: PrimaryLightState,
-    medium: MediumState,
     to_view: vec3<f32>,
     mode: u32,
 ) -> vec3<f32> {
-    // Crest's authored deep/grazing colours are volume-scatter albedos. They
-    // carry no radiance until the scene environment illuminates them.
-    var scatter_colour = medium.deep_body_albedo * medium.diffuse_irradiance;
+    var scatter_colour = vec3(0.0);
     // Crest `OceanEmission.hlsl::ScatterColour`: backlit subsurface tint is
     // driven by horizontal-displacement pinch, not absolute wave height.
     if mode >= DEBUG_MODE_BEAUTY
@@ -194,7 +191,6 @@ fn shade_water_body(
         // irradiance is the scene-driven equivalent; no constant radiance
         // floor is allowed when that environment is dark or absent.
         foam_ambient_radiance = sample_diffuse_environment(vec3(0.0, 1.0, 0.0));
-        body += medium.diffuse_irradiance * GODOT_WATER_ALBEDO;
         if foam.visible_density > 0.0 {
             body += foam_bubble_colour(
                 in.world_position.xz,
@@ -210,17 +206,6 @@ fn shade_water_body(
     }
     // Crest's final Fresnel composition supplies the `(1.0 - fresnel)`
     // modulation exactly once.
-    if mode >= DEBUG_MODE_BEAUTY && lights.n_directional_lights > 0u {
-        let light = lights.directional_lights[0u];
-        let light_direction = safe_normalize(
-            light.direction_to_light,
-            vec3(0.0, 1.0, 0.0),
-        );
-        let light_radiance = primary.radiance;
-        let lambertian = 0.5 * max(dot(near.lighting_normal, light_direction), 2e-5);
-        body += lambertian * light_radiance * GODOT_WATER_ALBEDO;
-    }
-
     let perceptual_roughness = unresolved_wave_roughness(
         in.undisplaced_xz,
         to_view,
@@ -500,7 +485,10 @@ fn compose_water(
 }
 
 @fragment
-fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
+fn fragment(
+    in: SurfaceVertexOutput,
+    @builtin(front_facing) is_front: bool,
+) -> @location(0) vec4<f32> {
     // Position derivatives measure adjacent fragments in world XZ. Their
     // maximum length conservatively bounds metres per screen pixel for LOD.
     set_xz_footprint(max(
@@ -554,7 +542,9 @@ fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
     let body_optics = bounded && params.optics_a.w > 0.5;
     set_body_optics(
         select(surface.fog_density.rgb, params.optics_a.rgb, body_optics),
-        select(1.0, params.optics_b.x, body_optics),
+        select(surface.fog_density.w, params.optics_b.x, body_optics),
+        select(surface.scatter_tint.rgb, params.optics_c.rgb, body_optics),
+        select(surface.far_tier.w, params.optics_b.w, body_optics),
     );
     // Discharge reads as roughness: faster narrows break up more, banks and
     // pools stay glassy. Bank fade eases the multiplier to zero at the edge.
@@ -570,6 +560,9 @@ fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
     let surface_lod = u32(round(in.sample_data.x));
     let geometric_normal = safe_normalize(in.world_normal, vec3(0.0, 1.0, 0.0));
     let to_view = view_direction(in.world_position.xyz);
+    if !is_front {
+        return shade_underside(in, surface_lod, geometric_normal, to_view, mode);
+    }
     let far_diagnostic = mode == DEBUG_MODE_FAR_TIER;
     var far_tier = select(
         0.0,
@@ -605,7 +598,7 @@ fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
 
     let near = resolve_near_surface(in, surface_lod, geometric_normal, far_tier, mode);
     let primary = resolve_primary_light(in, near.normal);
-    let medium = sample_water_medium(in, surface_lod, near.lighting_normal, to_view, mode);
+    let medium = sample_water_medium(in, surface_lod, mode);
     if mode == DEBUG_MODE_SEA_FLOOR {
         let depth = clamp(medium.water_depth / surface.sea_floor.y, 0.0, 1.0);
         return vec4(1.0 - depth, 0.0, depth, 1.0);
@@ -636,16 +629,11 @@ fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
         surface_lod,
         near,
         primary,
-        medium,
         to_view,
         mode,
     );
-    // Deep-pool darkness: bodies scale the ocean scatter endpoint down so
-    // colour comes from the bed through low-extinction water, not from a
-    // turquoise volume endpoint.
-    let scaled_scatter = scatter * invocation_scatter_scale();
     let transmission =
-        resolve_transmission(in, near.normal, scaled_scatter, medium, foam, primary, mode);
+        resolve_transmission(in, near.normal, to_view, medium, foam, primary, mode);
     if transmission.handled {
         return transmission.output;
     }
@@ -656,7 +644,7 @@ fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
         medium,
         foam,
         to_view,
-        transmission.body,
+        transmission.body + scatter,
         mode,
     );
     let reflected = shade_environment_and_sun(

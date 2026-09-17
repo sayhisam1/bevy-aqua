@@ -68,7 +68,6 @@ fn pass_table() -> Vec<pass::PassSpec> {
                         StorageTextureAccess::WriteOnly,
                     ),
                     uniform_buffer::<Uniform>(false),
-                    texture_2d_array(TextureSampleType::Float { filterable: true }),
                 ),
             ),
         ),
@@ -111,11 +110,10 @@ fn prepare_bind_groups(
     let Some(depth) = bed::gpu_image(bed.as_deref(), &fallback, &images) else {
         return;
     };
-    let (Some(state_a), Some(state_b), Some(waves), Some(wave_surface)) = (
+    let (Some(state_a), Some(state_b), Some(waves)) = (
         images.get(&frame.state_a),
         images.get(&frame.state_b),
         images.get(&frame.waves),
-        images.get(&frame.wave_surface),
     ) else {
         return;
     };
@@ -154,7 +152,6 @@ fn prepare_bind_groups(
                         &depth.texture_view,
                         &$write.texture_view,
                         uniform,
-                        &wave_surface.texture_view,
                     )),
                 ),
             );

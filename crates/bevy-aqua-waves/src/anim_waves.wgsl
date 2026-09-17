@@ -1,44 +1,10 @@
 // Reimplementation of the approach in Crest Scripts/Shapes/ShapeGerstnerBatched.cs and
 // Shaders/OceanInputs/GerstnerShared.hlsl.
 
-const LOD_COUNT: u32 = 5u;
-const CASCADE_COUNT: u32 = LOD_COUNT + 1u;
-const WAVE_COUNT: u32 = 40u;
+#import bevy_aqua_core::waves_sample::{AnimWavesUniform, LOD_COUNT}
+
 const TAU: f32 = 6.283185307179586;
 const PI: f32 = 3.141592653589793;
-
-struct CascadeParams {
-    center: vec2<f32>,
-    scale: f32,
-    texture_res: f32,
-    inv_texture_res: f32,
-    texel_width: f32,
-    weight: f32,
-    max_wavelength: f32,
-}
-struct CascadeLayout {
-    cascades: array<CascadeParams, CASCADE_COUNT>,
-    center: vec4<f32>,
-    // XY bed-map first-texel world origin, ZW inverse world extent.
-    bed_transform: vec4<f32>,
-    // X height minimum, Y height span (negative = no bed map), Z sea level.
-    bed_range: vec4<f32>,
-}
-struct GerstnerWave {
-    direction: vec2<f32>,
-    amplitude: f32,
-    wave_number: f32,
-    angular_frequency: f32,
-    phase: f32,
-    chop_amplitude: f32,
-}
-struct AnimWavesUniform {
-    cascade_layout: CascadeLayout,
-    waves: array<GerstnerWave, WAVE_COUNT>,
-    ranges: array<vec4<u32>, LOD_COUNT>,
-    time: vec4<f32>,
-    flow: vec4<f32>,
-}
 
 @group(0) @binding(0) var output: texture_storage_2d_array<rgba16float, write>;
 @group(0) @binding(1) var<uniform> params: AnimWavesUniform;

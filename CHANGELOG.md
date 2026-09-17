@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - A focused native/WebGPU `debug_views` example that automatically cycles
   through every `AquaDebug` diagnostic mode.
+- An `underwater` example: open ocean, camera 20 m below the surface, looking
+  toward an angled sun through Bevy's earth atmosphere.
+- Underside surface shading: water-to-air interface when looking up from below. Models Snell's window, Fresnel transmittance, and TIR (screen-space depth march).
+- Underwater volume shading: closed-form RGB Beer-Lambert transmittance and directional downwelling (Snell, Fresnel, particle Henyey-Greenstein plus molecular Rayleigh). Underwater object lighting is attenuated with a screen space effect using the depth buffer and water level.
+
+### Changed
+
+- Above water volume shading uses the same `aqua::medium` integral as the underwater pass.
+- Further texture binding consolidation (limit of 16 was being hit again with more fully featured test).
 
 ## [0.1.3] - 2026-08-30
 

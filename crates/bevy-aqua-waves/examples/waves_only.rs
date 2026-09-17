@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_aqua_core::{
     OceanWaves, WaterFields, bed,
-    cascade::{GpuLayout, layout, make_fft_surface_texture, make_texture},
+    cascade::{GpuLayout, layout, make_texture},
 };
 
 fn main() {
@@ -34,12 +34,10 @@ fn main() {
 
 fn assemble_data(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     let texture = images.add(make_texture());
-    let fft_surface = images.add(make_fft_surface_texture());
     let cascades = layout(Vec2::ZERO);
     commands.insert_resource(bevy_aqua_core::Data::new(
         Handle::default(),
         texture,
-        fft_surface,
         GpuLayout::new(&cascades, Vec2::ZERO, 0.0),
     ));
 }

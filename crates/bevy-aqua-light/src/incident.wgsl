@@ -131,7 +131,7 @@ fn local_light_contribution(
 ) -> LocalLightContribution {
     let dot_nl = max(dot(lighting_normal, sample.direction), 0.0);
     let dot_nv = max(dot(lighting_normal, to_view), 2e-5);
-    var body = 0.5 * dot_nl * sample.radiance * GODOT_WATER_ALBEDO;
+    var body = vec3(0.0);
     if sss_enabled {
         let towards_light = pow(
             max(dot(sample.direction, -to_view), 0.0),

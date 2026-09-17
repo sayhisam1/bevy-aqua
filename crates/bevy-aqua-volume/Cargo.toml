@@ -1,0 +1,20 @@
+[package]
+name = "bevy-aqua-volume"
+description = "Underwater volumetric lighting for Aqua: closed-form in-scatter and Beer-Lambert transmittance."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bevy-aqua-core.workspace = true
+bevy = { workspace = true, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_render",
+] }
+
+[lints]
+workspace = true

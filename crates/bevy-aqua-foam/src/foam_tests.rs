@@ -26,3 +26,16 @@ fn state_texture_matches_the_generated_shader_contract() {
             .contains(TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING)
     );
 }
+
+#[test]
+fn pattern_texture_puts_caustics_in_green() {
+    let image = make_pattern_texture();
+    let data = image.data.as_ref().expect("pattern pixels");
+    let x = 20u32;
+    let y = 10u32;
+    let texel = 4 * (y * PATTERN_SIZE + x) as usize;
+    assert_eq!(
+        data[texel + 1],
+        bevy_aqua_core::caustic_green_srgb(x, y, PATTERN_SIZE)
+    );
+}

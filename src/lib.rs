@@ -1,7 +1,8 @@
 //! Camera-centred ocean rendering for Bevy.
 //!
 //! Aqua provides concentric ocean geometry, analytic and FFT displacement,
-//! depth-aware transmission, reflections, foam, and shallow-water attenuation.
+//! depth-aware transmission, reflections, foam, shallow-water attenuation,
+//! and an underwater volume pass.
 //! One world unit is one metre.
 //!
 //! # Setup
@@ -62,6 +63,7 @@ pub use bevy_aqua_query::{WaveQuery, WaveSurface};
 pub use bevy_aqua_reflect::ReflectedInWater;
 #[cfg(feature = "spray")]
 pub use bevy_aqua_spray::{SprayQuality, SpraySettings};
+
 /// Adds the ocean renderer and its simulation plugins.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AquaPlugin;
@@ -75,6 +77,7 @@ impl Plugin for AquaPlugin {
         app.add_plugins(bevy_aqua_waves::AquaWavesPlugin);
         app.add_plugins(bevy_aqua_foam::AquaFoamPlugin);
         app.add_plugins(bevy_aqua_shore::AquaShorePlugin);
+        app.add_plugins(bevy_aqua_volume::AquaVolumePlugin);
         #[cfg(feature = "motion")]
         app.add_plugins(bevy_aqua_motion::AquaMotionPlugin);
         #[cfg(feature = "reflect")]
@@ -190,22 +193,16 @@ fn update_view(
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one-time assembly of Aqua's shared GPU material"
-)]
 fn lod_init(
     mut commands: Commands,
     bed: Option<Res<BedHeightMap>>,
     fallback: Res<bevy_aqua_core::GpuFallback>,
     sea_level: Res<ViewSeaLevel>,
     foam_textures: Res<bevy_aqua_foam::Textures>,
-    caustics: Res<bevy_aqua_shore::CausticsTexture>,
     mut images: ResMut<Assets<bevy::image::Image>>,
     mut materials: ResMut<Assets<CascadeMaterial>>,
 ) {
     let texture = images.add(bevy_aqua_core::cascade::make_texture());
-    let fft_surface = images.add(bevy_aqua_core::cascade::make_fft_surface_texture());
     let detail_normal = images.add(bevy_aqua_core::cascade::make_detail_normal_texture());
     let mut layout = bevy_aqua_core::GpuLayout::new(
         &bevy_aqua_core::cascade::layout(Vec2::ZERO),
@@ -224,15 +221,13 @@ fn lod_init(
         detail_normal,
         foam: foam_textures.surface.clone(),
         foam_pattern: foam_textures.pattern.clone(),
-        fft_surface: fft_surface.clone(),
         fields: params,
         field_maps: images.add(maps),
         reflection_a: fallback.0.clone(),
         reflection_b: fallback.0.clone(),
         reflections: bevy_aqua_core::PlanarReflectionParams::default(),
-        caustics: caustics.0.clone(),
     });
-    commands.insert_resource(Data::new(material, texture, fft_surface, layout));
+    commands.insert_resource(Data::new(material, texture, layout));
 }
 
 fn lod_update(

@@ -1,28 +1,14 @@
 // Persistent reprojection, decay, whitecaps, and shore source.
 #import aqua::foam::contract::{FOAM_LOD_COUNT, FOAM_TEXTURE_RESOLUTION, FOAM_TEXTURE_RESOLUTION_U32}
+#import bevy_aqua_core::waves_sample::{
+    CascadeLayout,
+    CascadeParams,
+    UV_CENTER,
+    world_to_uv,
+}
 
 // Decoded "no bed data" depth: matches a cleared full-depth capture texel.
 const NO_BED_DEPTH: f32 = 256.0;
-const UV_CENTER: f32 = 0.5;
-
-struct CascadeParams {
-    center: vec2<f32>,
-    scale: f32,
-    texture_res: f32,
-    inv_texture_res: f32,
-    texel_width: f32,
-    weight: f32,
-    max_wavelength: f32,
-}
-
-struct CascadeLayout {
-    cascades: array<CascadeParams, 6>,
-    center: vec4<f32>,
-    // XY bed-map first-texel world origin, ZW inverse world extent.
-    bed_transform: vec4<f32>,
-    // X height minimum, Y height span (negative = no bed map), Z sea level.
-    bed_range: vec4<f32>,
-}
 
 struct FoamUniform {
     source_layout: CascadeLayout,
@@ -39,12 +25,6 @@ struct FoamUniform {
 @group(0) @binding(4) var bed_height: texture_2d<f32>;
 @group(0) @binding(5) var target_foam: texture_storage_2d_array<rgba16float, write>;
 @group(0) @binding(6) var<uniform> foam: FoamUniform;
-@group(0) @binding(7) var fft_surface: texture_2d_array<f32>;
-
-fn world_to_uv(world_xz: vec2<f32>, cascade: CascadeParams) -> vec2<f32> {
-    let coverage = cascade.texel_width * cascade.texture_res;
-    return (world_xz - cascade.center) / coverage + vec2(UV_CENTER);
-}
 
 fn texel_world(id: vec2<u32>, cascade: CascadeParams) -> vec2<f32> {
     let uv = (vec2<f32>(id) + vec2(0.5)) / FOAM_TEXTURE_RESOLUTION;
@@ -98,10 +78,10 @@ fn jacobian_foam_source(
 ) -> f32 {
     if foam.step.z != 0u {
         let determinant = textureSampleLevel(
-            fft_surface,
+            anim_waves,
             waves_sampler,
             world_to_uv(world_xz, cascade),
-            i32(slice),
+            i32(slice + FOAM_LOD_COUNT),
             0.0,
         ).w;
         return clamp(foam.wave.w - determinant, 0.0, 1.0);

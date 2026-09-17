@@ -1,5 +1,5 @@
 //! The AnimWaves uniform ABI, shared by the waves producer that fills it
-//! and the wave-query consumer that binds it.
+//! and the WGSL consumers that bind it (`bevy_aqua_core::waves_sample`).
 
 use bevy::ecs::resource::Resource;
 use bevy::math::{UVec4, Vec2, Vec4};
@@ -7,8 +7,8 @@ use bevy::render::render_resource::ShaderType;
 
 use crate::cascade::{GpuLayout, LOD_COUNT};
 
-/// Fixed uniform wave-slot count; matches `WAVE_COUNT` in anim_waves.wgsl
-/// and the wave-query shader's declaration of the same ABI.
+/// Fixed uniform wave-slot count; matches `WAVE_COUNT` in
+/// `cascade/waves_sample.wgsl`.
 pub const WAVE_SLOTS: usize = 40;
 
 /// One Gerstner/FFT-band wave slot in the AnimWaves uniform.
@@ -45,8 +45,8 @@ impl std::fmt::Debug for AnimWavesUniformSlot {
 }
 
 /// The live AnimWaves simulation uniform: one authoritative upload shared
-/// by the wave compute passes and the query pass. Layout must stay aligned
-/// with `AnimWavesUniform` in both WGSL consumers.
+/// by the wave compute passes and the query and volume passes. Layout must
+/// stay aligned with `AnimWavesUniform` in `cascade/waves_sample.wgsl`.
 #[derive(ShaderType, Clone, Debug)]
 pub struct AnimWavesUniform {
     pub layout: GpuLayout,

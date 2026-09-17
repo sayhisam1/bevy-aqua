@@ -7,10 +7,13 @@ use bevy::{
         CompressedImageFormats, ImageAddressMode, ImageFilterMode, ImageSampler,
         ImageSamplerDescriptor, ImageType,
     },
+    mesh::MeshVertexBufferLayoutRef,
+    pbr::{MaterialPipeline, MaterialPipelineKey},
     prelude::*,
     render::render_resource::{
-        AsBindGroup, Extent3d, ShaderType, TextureDimension, TextureFormat, TextureUsages,
-        TextureViewDescriptor, TextureViewDimension,
+        AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+        TextureDimension, TextureFormat, TextureUsages, TextureViewDescriptor,
+        TextureViewDimension,
     },
     shader::ShaderRef,
 };
@@ -26,9 +29,14 @@ pub use bevy_aqua_geom::{LOD_COUNT, TILE_RESOLUTION};
 pub const BASE_SCALE: f32 = 24.0;
 const LOD_SCALE_MULTIPLIER: f32 = 2.0;
 
-/// Cascade texture side length in texels; every AnimWaves/foam/FFT array
-/// uses this width and height.
+/// Cascade texture side length in texels; AnimWaves, FFT, and the packed
+/// surface array share this width and height. Foam keeps its own resolution.
 pub const RESOLUTION: u32 = 256;
+/// First array layer of the cached FFT normal-cross / Jacobian in the packed
+/// cascade texture. Displacement occupies `[0, LOD_COUNT)`.
+pub const SURFACE_LAYER_BASE: u32 = LOD_COUNT as u32;
+/// Displacement plus FFT surface, one layer per LOD each.
+pub const CASCADE_LAYER_COUNT: u32 = 2 * LOD_COUNT as u32;
 const COVERAGE_MULTIPLIER: f32 = 4.0;
 const CASCADE_COUNT: usize = LOD_COUNT + 1;
 const MAX_WAVELENGTH_TEXELS: f32 = 4.0;
@@ -60,15 +68,14 @@ pub struct Cascade {
 }
 
 /// The shared cascade resources one participant inserts at startup and
-/// everyone else reads: the material handle, the two displacement
-/// textures, and the live layout. Assembled by umbrella glue because it
-/// pulls foam textures from a feature resource. Extracted into the render
-/// app so render-side consumers see the same handles.
+/// everyone else reads: the material handle, the packed cascade texture,
+/// and the live layout. Assembled by umbrella glue because it pulls foam
+/// textures from a feature resource. Extracted into the render app so
+/// render-side consumers see the same handles.
 #[derive(Resource, Debug, Clone, bevy::render::extract_resource::ExtractResource)]
 pub struct Data {
     material: Handle<CascadeMaterial>,
     texture: Handle<Image>,
-    fft_surface: Handle<Image>,
     layout: GpuLayout,
 }
 
@@ -77,13 +84,11 @@ impl Data {
     pub fn new(
         material: Handle<CascadeMaterial>,
         texture: Handle<Image>,
-        fft_surface: Handle<Image>,
         layout: GpuLayout,
     ) -> Self {
         Self {
             material,
             texture,
-            fft_surface,
             layout,
         }
     }
@@ -94,10 +99,6 @@ impl Data {
 
     pub fn texture(&self) -> Handle<Image> {
         self.texture.clone()
-    }
-
-    pub fn fft_surface(&self) -> Handle<Image> {
-        self.fft_surface.clone()
     }
 
     pub fn layout(&self) -> &GpuLayout {
@@ -125,11 +126,11 @@ pub struct CascadeMaterial {
     #[texture(7, dimension = "2d_array")]
     #[sampler(8)]
     pub foam: Handle<Image>,
+    /// Foam breakup in red, bed caustics in green. One 2D texture so the
+    /// cascade material stays inside WebGPU's fragment sampled-texture limit.
     #[texture(9)]
     #[sampler(10)]
     pub foam_pattern: Handle<Image>,
-    #[texture(11, dimension = "2d_array")]
-    pub fft_surface: Handle<Image>,
     /// Global water fields: region uniform, per-slot parameters,
     /// level+slot map, and per-texel flow.
     #[uniform(15)]
@@ -146,9 +147,6 @@ pub struct CascadeMaterial {
     pub reflection_b: Handle<Image>,
     #[uniform(22)]
     pub reflections: PlanarReflectionParams,
-    #[texture(23)]
-    #[sampler(24)]
-    pub caustics: Handle<Image>,
 }
 
 /// One horizontal water level's mirrored view transform.
@@ -190,6 +188,16 @@ impl Material for CascadeMaterial {
     fn reads_view_transmission_texture(&self) -> bool {
         true
     }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = None;
+        Ok(())
+    }
 }
 
 /// Per-body extent parameters for localized water. Ocean tiles carry the
@@ -210,8 +218,11 @@ pub struct BodyParams {
     /// profile; w: optics enable flag. Fresh-water bodies author low
     /// extinction so the bed shows through.
     optics_a: Vec4,
-    /// x: scatter-endpoint scale (deep-pool darkness); yzw reserved.
+    /// x: scatter-scale for particle σs; y: sun roughness; z: plain Schlick
+    /// flag; w: Henyey-Greenstein `g`.
     optics_b: Vec4,
+    /// rgb: particle scatter chromaticity; w reserved.
+    optics_c: Vec4,
 }
 
 impl BodyParams {
@@ -224,6 +235,7 @@ impl BodyParams {
             aabb_size: Vec4::ZERO,
             optics_a: Vec4::ZERO,
             optics_b: Vec4::ZERO,
+            optics_c: Vec4::ZERO,
         }
     }
 
@@ -238,15 +250,17 @@ impl BodyParams {
     ) -> Self {
         // Body Fresnel is plain Schlick (no roughness damping); the ocean
         // preset keeps its damped curve.
-        let (extinction, scale, roughness, schlick, enabled) = match optics {
+        let (extinction, scale, tint, roughness, schlick, g, enabled) = match optics {
             Some(optics) => (
                 optics.extinction,
                 optics.scatter_scale,
+                optics.scatter_tint,
                 optics.sun_roughness,
                 1.0,
+                optics.scattering_asymmetry,
                 1.0,
             ),
-            None => (Vec3::ZERO, 1.0, -1.0, 0.0, 0.0),
+            None => (Vec3::ZERO, 1.0, Vec3::ZERO, -1.0, 0.0, 0.0, 0.0),
         };
         Self {
             flags: Vec4::new(1.0, if has_flow { 1.0 } else { 0.0 }, 0.0, 0.0),
@@ -254,37 +268,34 @@ impl BodyParams {
             aabb_min: Vec4::new(aabb_min.x, aabb_min.y, 0.0, 0.0),
             aabb_size: Vec4::new(aabb_size.x, aabb_size.y, 0.0, 0.0),
             optics_a: Vec4::new(extinction.x, extinction.y, extinction.z, enabled),
-            optics_b: Vec4::new(scale, roughness, schlick, 0.0),
+            optics_b: Vec4::new(scale, roughness, schlick, g),
+            optics_c: Vec4::new(tint.x, tint.y, tint.z, 0.0),
         }
     }
 }
 
 /// Per-body water optics: low extinction keeps shallow fresh water clear
-/// over its bed; the scatter scale darkens the deep endpoint so pools read
-/// by depth instead of ocean turquoise.
+/// over visible beds; scatter scale is particle load for the shared medium.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BodyOptics {
     /// Per-channel Beer-Lambert extinction in inverse metres.
     pub extinction: Vec3,
-    /// Multiplier on the volume-scatter endpoint.
+    /// Multiplier on particle scatter for the shared water medium.
     pub scatter_scale: f32,
+    /// Per-channel particle scatter chromaticity for the shared water medium.
+    pub scatter_tint: Vec3,
+    /// Henyey-Greenstein `g` for the shared water medium.
+    pub scattering_asymmetry: f32,
     /// Surface roughness driving the Fresnel response; negative inherits
     /// the ocean value.
     pub sun_roughness: f32,
 }
 
-/// Surface shading parameters uploaded with the material: colours,
-/// Fresnel/reflection/sun controls, debug routing, and advection. Mirrors
-/// `SurfaceParams` in cascade/common.wgsl field for field.
+/// Surface shading parameters uploaded with the material: Fresnel,
+/// reflection, sun, debug routing, and advection. Mirrors `SurfaceParams`
+/// in cascade/common.wgsl field for field.
 #[derive(ShaderType, Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceParams {
-    /// Deep-water body colour (rgb) with reserved alpha.
-    pub deep_color: Vec4,
-    /// Grazing-angle reflection tint (rgb).
-    pub grazing_color: Vec4,
-    /// Coastal scatter colour; alpha is the metric depth at which it
-    /// reaches deep water.
-    pub shallow_color: Vec4,
     /// x: water F0, y: Godot Fresnel power, z: specular strength, w reserved.
     pub fresnel: Vec4,
     /// x: FFT flag, y: micro-roughness strength, z: daylight lux,
@@ -296,8 +307,10 @@ pub struct SurfaceParams {
     /// x: mode, y: shader-property refraction strength, z: debug range,
     /// w: bilinear-foam diagnostic flag.
     pub debug: Vec4,
-    /// rgb: ocean Beer-Lambert extinction per channel; w reserved.
+    /// rgb: ocean Beer-Lambert extinction per channel; w: particle scatter scale.
     pub fog_density: Vec4,
+    /// rgb: particle scatter chromaticity; w reserved.
+    pub scatter_tint: Vec4,
     /// x: maximum sampled depth; y: debug range; z: waterline fade depth;
     /// w: direct-sun visibility. Depths are metres.
     pub sea_floor: Vec4,
@@ -315,20 +328,19 @@ pub struct SurfaceParams {
     /// xy: world-space current in m/s; zw reserved. The shader advects wave
     /// sampling by `flow * globals.time`.
     pub advection: Vec4,
-    /// x: far-tier transition start in metres, y: end; zw reserved.
+    /// x: far-tier transition start in metres, y: end;
+    /// z reserved; w: Henyey-Greenstein `g`.
     pub far_tier: Vec4,
     /// Strength, metres per cell, metres per second, and maximum depth in metres.
     pub caustics: Vec4,
 }
 
 impl SurfaceParams {
-    /// Applies one optics preset's colours and extinction to the uniform.
+    /// Applies one optics preset's extinction, particle scatter, and crest SSS
+    /// tint to the uniform.
     pub fn apply_optics(&mut self, optics: &WaterOptics) {
-        self.deep_color = optics.deep_color.extend(1.0);
-        self.grazing_color = optics.grazing_color.extend(1.0);
-        // Alpha is the metric depth at which coastal scatter reaches deep water.
-        self.shallow_color = optics.shallow_color.extend(7.0);
-        self.fog_density = optics.extinction.extend(0.0);
+        self.fog_density = optics.extinction.extend(optics.scatter_scale.max(0.0));
+        self.scatter_tint = optics.scatter_tint.max(Vec3::ZERO).extend(0.0);
         self.sss_tint = optics.sss_tint.extend(0.0);
     }
 }
@@ -336,10 +348,6 @@ impl SurfaceParams {
 impl Default for SurfaceParams {
     fn default() -> Self {
         Self {
-            // Accepted Crest shader-property profile; see the Ocean.mat divergence above.
-            deep_color: Vec4::new(0.0, 0.002_695_407_3, 0.169_811_31, 1.0),
-            grazing_color: Vec4::new(0.0, 0.003_921_569, 0.168_627_4, 1.0),
-            shallow_color: Vec4::new(0.012, 0.13, 0.115, 7.0),
             // Water F0, Godot Fresnel power, shipped Crest specular strength, reserved.
             fresnel: Vec4::new(0.020_373_19, 5.0, 1.0, 0.0),
             // FFT flag, micro-roughness strength, daylight lux, maximum roughness.
@@ -350,7 +358,8 @@ impl Default for SurfaceParams {
             // Shipped `Ocean.mat:145` uses strength 1.0; Aqua retains 0.5 for the accepted view.
             debug: Vec4::new(0.0, 0.5, 32.0, 0.0),
             // Shader-property extinction (`Ocean.shader:146`); Ocean.mat:185 differs.
-            fog_density: Vec4::new(0.9, 0.3, 0.35, 0.0),
+            fog_density: Vec4::new(0.9, 0.3, 0.35, 0.2),
+            scatter_tint: Vec4::new(0.85, 1.0, 1.22, 0.0),
             // Maximum depth, debug range, waterline fade, direct-sun visibility.
             sea_floor: Vec4::new(32.0, 10.0, 1.0, 0.0),
             // Shader-property SSS (`Ocean.shader:48,50-54`); Ocean.mat:156,164-165,195 differs.
@@ -365,7 +374,7 @@ impl Default for SurfaceParams {
             foam: Vec4::new(10.0, 0.4, 1.35, 1.0),
             // No current by default; the accepted goldens stay world-anchored.
             advection: Vec4::ZERO,
-            far_tier: Vec4::new(320.0, 512.0, 0.0, 0.0),
+            far_tier: Vec4::new(320.0, 512.0, 0.0, 0.8),
             caustics: Vec4::ZERO,
         }
     }
@@ -373,7 +382,7 @@ impl Default for SurfaceParams {
 
 #[derive(ShaderType, Debug, Default, Clone, Copy, PartialEq)]
 /// The per-cascade uniform block: transform plus derived constants, as
-/// uploaded to the shader (`CascadeParams` in common.wgsl).
+/// uploaded to the shader (`CascadeParams` in waves_sample.wgsl).
 pub struct GpuCascade {
     /// World-XZ centre of this cascade this frame.
     pub center: Vec2,
@@ -392,7 +401,7 @@ pub struct GpuCascade {
 }
 
 #[derive(ShaderType, Debug, Clone)]
-/// The cascade layout uniform (`CascadeLayout` in common.wgsl): the ring
+/// The cascade layout uniform (`CascadeLayout` in waves_sample.wgsl): the ring
 /// stack plus camera/bed mapping.
 pub struct GpuLayout {
     /// Per-cascade parameters; the last slot is a zero-weighted sentinel
@@ -472,6 +481,7 @@ struct ShaderLibraries {
 pub fn add_shader(app: &mut App) {
     embedded_asset!(app, "cascade/common.wgsl");
     embedded_asset!(app, "cascade/river.wgsl");
+    embedded_asset!(app, "cascade/waves_sample.wgsl");
     embedded_asset!(app, "cascade/deform.wgsl");
     embedded_asset!(app, "cascade/types.wgsl");
     embedded_asset!(app, "cascade/material.wgsl");
@@ -479,6 +489,7 @@ pub fn add_shader(app: &mut App) {
     let handles = vec![
         server.load("embedded://bevy_aqua_core/cascade/common.wgsl"),
         server.load("embedded://bevy_aqua_core/cascade/river.wgsl"),
+        server.load("embedded://bevy_aqua_core/cascade/waves_sample.wgsl"),
         server.load("embedded://bevy_aqua_core/cascade/deform.wgsl"),
         server.load("embedded://bevy_aqua_core/cascade/types.wgsl"),
     ];
@@ -572,7 +583,12 @@ pub fn update(
         material.surface.advection = Vec4::new(waves.flow.x, waves.flow.y, 0.0, 0.0);
         let far_start = settings.far_tier_start.max(0.0);
         let far_end = settings.far_tier_end.max(far_start + 1.0);
-        material.surface.far_tier = Vec4::new(far_start, far_end, 0.0, 0.0);
+        material.surface.far_tier = Vec4::new(
+            far_start,
+            far_end,
+            0.0,
+            settings.water_optics.scattering_asymmetry,
+        );
         material.surface.sea_floor.w = caustic_sun.0.clamp(0.0, 1.0);
         material.surface.caustics = settings.caustics.map_or(Vec4::ZERO, |caustics| {
             Vec4::new(
@@ -614,15 +630,16 @@ pub fn layout(camera: Vec2) -> [Cascade; LOD_COUNT] {
     })
 }
 
-/// Creates Crest's signed XYZ displacement array.
+/// Creates the published cascade array: displacement in layers
+/// `[0, LOD_COUNT)`, FFT surface in `[SURFACE_LAYER_BASE, CASCADE_LAYER_COUNT)`.
 ///
 /// Reimplementation of the approach in `Scripts/LodData/LodDataMgrAnimWaves.cs`.
 pub fn make_texture() -> Image {
-    make_array_texture(LOD_COUNT as u32)
+    make_array_texture(CASCADE_LAYER_COUNT)
 }
 
-/// Creates the FFT surface normal-cross array texture.
-pub fn make_fft_surface_texture() -> Image {
+/// Creates a LOD-only scratch array for AnimWaves combine intermediates.
+pub fn make_lod_scratch() -> Image {
     make_array_texture(LOD_COUNT as u32)
 }
 

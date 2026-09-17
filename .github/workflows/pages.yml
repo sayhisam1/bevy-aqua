@@ -60,6 +60,7 @@ jobs:
             water_optics
             planar_reflection
             wave_query
+            underwater
           )
           descriptions=(
             "Minimal analytic ocean"
@@ -72,6 +73,7 @@ jobs:
             "Water appearance presets shown side by side"
             "Planar reflection of marked scene geometry"
             "GPU surface queries driving a procedural buoy"
+            "Open ocean from 20 m underwater, looking toward the sun"
           )
 
           mkdir -p public/screenshots

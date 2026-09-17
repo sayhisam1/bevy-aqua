@@ -44,7 +44,6 @@ fn assemble_data(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     commands.insert_resource(bevy_aqua_core::Data::new(
         Handle::default(),
         images.add(bevy_aqua_core::cascade::make_texture()),
-        images.add(bevy_aqua_core::cascade::make_fft_surface_texture()),
         bevy_aqua_core::GpuLayout::new(&cascades, Vec2::ZERO, 0.0),
     ));
 }

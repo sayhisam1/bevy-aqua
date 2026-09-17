@@ -34,13 +34,11 @@ fn build(mut materials: ResMut<Assets<CascadeMaterial>>) {
         detail_normal: Handle::default(),
         foam: Handle::default(),
         foam_pattern: Handle::default(),
-        fft_surface: Handle::default(),
         fields: FieldParams::none(),
         field_maps: Handle::default(),
         reflection_a: Handle::default(),
         reflection_b: Handle::default(),
         reflections: Default::default(),
-        caustics: Handle::default(),
     };
     // Fixed uniform ABI: six cascade slots, last one a zero-weight sentinel.
     assert_eq!(material.layout.cascades.len(), 6);

@@ -147,7 +147,6 @@ pub fn init(mut commands: Commands, data: Res<lod::Data>, textures: Res<Textures
         state_b: textures.state_b.clone(),
         surface: textures.surface.clone(),
         waves: data.texture(),
-        wave_surface: data.fft_surface(),
         uniform: Uniform::new(layout.clone()),
         simulated_layout: layout,
     });
@@ -185,7 +184,6 @@ pub struct Frame {
     state_b: Handle<Image>,
     surface: Handle<Image>,
     waves: Handle<Image>,
-    wave_surface: Handle<Image>,
     uniform: Uniform,
     simulated_layout: lod::GpuLayout,
 }
@@ -346,6 +344,7 @@ fn make_pattern_texture() -> Image {
     let mut levels = Vec::new();
     let mut size = PATTERN_SIZE;
     let mut level = resize_srgb(&source, SOURCE_PATTERN_SIZE, PATTERN_SIZE);
+    bevy_aqua_core::write_pattern_caustics(&mut level, PATTERN_SIZE);
     loop {
         levels.extend_from_slice(&level);
         if size == 1 {

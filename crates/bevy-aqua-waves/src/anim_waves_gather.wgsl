@@ -1,6 +1,6 @@
 // Consolidates the alternating ShapeCombine outputs into AnimWaves.
 
-const LOD_COUNT: u32 = 5u;
+#import bevy_aqua_core::waves_sample::LOD_COUNT
 
 @group(0) @binding(0) var scratch_a: texture_2d_array<f32>;
 @group(0) @binding(1) var scratch_b: texture_2d_array<f32>;

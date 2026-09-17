@@ -5,7 +5,8 @@
 
 #import bevy_pbr::mesh_view_bindings::globals
 
-#import aqua::cascade::{CascadeParams, LUMINANCE_EPSILON, LocalLightSample, MIN_SAMPLE_WEIGHT, RiverState, advected_world, capillary_resolved_weight, cascade_layout, foam_data, foam_pattern, foam_pattern_sampler, foam_sampler, lod_count, screen_texture_lod, surface, world_to_uv}
+#import bevy_aqua_core::waves_sample::{CascadeParams, world_to_uv}
+#import aqua::cascade::{LUMINANCE_EPSILON, LocalLightSample, MIN_SAMPLE_WEIGHT, RiverState, advected_world, capillary_resolved_weight, cascade_layout, foam_data, foam_pattern, foam_pattern_sampler, foam_sampler, lod_count, screen_texture_lod, surface}
 #import aqua::foam::contract::{FOAM_PATTERN_RESOLUTION, FOAM_TEXTURE_RESOLUTION}
 const INV_PI: f32 = 0.31830988618;
 const CREST_FOAM_WHITE_COLOR: vec4<f32> = vec4(

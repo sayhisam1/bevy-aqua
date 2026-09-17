@@ -1,27 +1,11 @@
+#import bevy_aqua_core::waves_sample::{CascadeLayout, LOD_COUNT}
+
 const FFT_RESOLUTION: u32 = 256u;
-const LOD_COUNT: u32 = 5u;
 const ATTENUATION_BINS: u32 = 4u;
 const FIELD_LAYERS: u32 = LOD_COUNT * ATTENUATION_BINS;
 const GRAVITY: f32 = 9.81;
 const CHOP: f32 = 0.8;
 
-struct CascadeParams {
-    center: vec2<f32>,
-    scale: f32,
-    texture_res: f32,
-    inv_texture_res: f32,
-    texel_width: f32,
-    weight: f32,
-    max_wavelength: f32,
-}
-struct CascadeLayout {
-    cascades: array<CascadeParams, 6>,
-    center: vec4<f32>,
-    // XY bed-map first-texel world origin, ZW inverse world extent.
-    bed_transform: vec4<f32>,
-    // X height minimum, Y height span (negative = no bed map), Z sea level.
-    bed_range: vec4<f32>,
-}
 struct FftUniform {
     cascade_layout: CascadeLayout,
     params: vec4<f32>,

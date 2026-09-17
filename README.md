@@ -15,6 +15,7 @@ bodies, and GPU surface queries.
 - Five camera-centred displacement cascades with smooth LOD blending.
 - Crest-style analytic waves or Tessendorf spectral waves.
 - Beer-Lambert transmission, refraction, reflections, and scene lighting.
+- Underwater volume and water surface shading.
 - Persistent whitecaps and shoreline foam.
 - Static terrain heightfields for shoaling and shallow-water optics.
 - Bounded ponds, lakes, and river corridors with per-body optics.
@@ -93,7 +94,9 @@ data; set them before the plugin starts.
 
 `AquaSettings` selects a `WaterOptics` preset and a `detail_strength` in
 `0..=2`. `WaterOptics::DEEP_OCEAN` is the default. Coastal, tropical, and
-clear-fresh presets are also provided. `far_tier_start` and `far_tier_end`
+clear-fresh presets are also provided. Extinction, particle scatter scale
+and tint, molecular Rayleigh, and Henyey-Greenstein `scattering_asymmetry`
+live on that optics profile. `far_tier_start` and `far_tier_end`
 bound the reduced-cost shading transition in metres. Far shading keeps sun
 and reflections while omitting depth, foam, and sampled subsurface detail.
 `reflections` selects the default planar mirror views or the byte-compatible cubemap-only path. Mark terrain or a
@@ -179,6 +182,7 @@ source code.
 | `water_optics` | Water appearance presets shown side by side | <img src="docs/images/examples/water_optics.jpg" alt="water_optics example" width="220"> |
 | `planar_reflection` | Planar reflection of marked scene geometry | <img src="docs/images/examples/planar_reflection.jpg" alt="planar_reflection example" width="220"> |
 | `wave_query` | GPU surface queries driving a procedural buoy | <img src="docs/images/examples/wave_query.jpg" alt="wave_query example" width="220"> |
+| `underwater` | Open ocean from 20 m down, looking toward the sun | <img src="docs/images/examples/underwater.jpg" alt="underwater example" width="220"> |
 
 Run any scene natively:
 
