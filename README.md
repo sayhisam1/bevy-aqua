@@ -237,6 +237,27 @@ probe, emitter, particle-rate, distance, and projected-screen-coverage budgets.
 They reuse `WaveSurface::crest` and bed depth rather than adding a spray fluid
 simulation.
 
+### Spray consistency (unreleased)
+
+In plain terms:
+
+1. **A burst spends budget only when an emitter keeps it.** Candidates used to
+   wrap around the fixed emitter pool and overwrite pending bursts after those
+   bursts had already spent tokens and cooldown. Each emitter is now reserved
+   once per dispatch, so crowded crests keep the spray density the budget paid
+   for. There is no API change; busy-view burst selection and density can change.
+2. **Probe direction stays stable when looking nearly vertical.** Projecting the
+   camera's almost-vertical forward vector made tiny rounding errors steer the
+   probe grid. The near-vertical path now recovers yaw from camera-right. There
+   is no API change; extreme-pitch probe placement and resulting spray can change.
+3. **Particles inherit the water surface and current.** Bursts always launched
+   around world-up and ignored river flow because emitters received only crest
+   strength. Emitters now receive a safe query normal and the owning body's
+   authored current. Spray visibly leans with crests and drifts with rivers.
+   There is no Rust API change; sloped or flowing spray trajectories can change.
+
+See [`MIGRATION.md`](MIGRATION.md) for the full ELI5 handoff and limits.
+
 ## Examples
 
 The examples are small, fixed scenes. Each one demonstrates one public feature
