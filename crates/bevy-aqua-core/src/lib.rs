@@ -415,14 +415,10 @@ pub enum AquaDebug {
     BeerLambert,
     /// Render the orthographic SeaFloorDepth cache.
     SeaFloorDepth,
-    /// Render the shallow-water transmission, reflection, and attenuation composite.
-    ShallowComposite,
     /// Render only Fresnel-weighted environment and sun reflection.
     ReflectionSanity,
     /// Render the persistent foam density before surface breakup.
     FoamDensity,
-    /// Render FFT foam density with the legacy bilinear reconstruction for A/B diagnostics.
-    FoamDensityBilinear,
     /// Render displaced surface height as signed grayscale.
     WaveHeight,
     /// Render pre-exposed primary-light RGB divided by 16 for direct readback probes.

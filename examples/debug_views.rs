@@ -15,10 +15,9 @@ const BEACH_SLOPE: f32 = 0.06;
 const BEACH_HEIGHT: f32 = -3.0;
 const VIEW_SECONDS: f32 = 3.0;
 
-const DEBUG_VIEWS: [(AquaDebug, &str); 14] = [
+const DEBUG_VIEWS: [(AquaDebug, &str); 12] = [
     (AquaDebug::WaveHeight, "Wave height"),
     (AquaDebug::FoamDensity, "Foam density"),
-    (AquaDebug::FoamDensityBilinear, "Foam density (bilinear)"),
     (AquaDebug::WaterPath, "Water path"),
     (AquaDebug::RefractionValidity, "Refraction validity"),
     (AquaDebug::Transmission, "Transmission"),
@@ -28,7 +27,6 @@ const DEBUG_VIEWS: [(AquaDebug, &str); 14] = [
     ),
     (AquaDebug::BeerLambert, "Beer-Lambert"),
     (AquaDebug::SeaFloorDepth, "Sea-floor depth"),
-    (AquaDebug::ShallowComposite, "Shallow composite"),
     (AquaDebug::ReflectionSanity, "Reflection sanity"),
     (AquaDebug::LightRadiance, "Light radiance"),
     (AquaDebug::FarTier, "Far-tier weight"),

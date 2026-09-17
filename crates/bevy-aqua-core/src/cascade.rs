@@ -294,7 +294,7 @@ pub struct SurfaceParams {
     /// z: filter raw sunlight through the atmosphere; w reserved.
     pub sun: Vec4,
     /// x: mode, y: shader-property refraction strength, z: debug range,
-    /// w: bilinear-foam diagnostic flag.
+    /// w: unused padding.
     pub debug: Vec4,
     /// rgb: ocean Beer-Lambert extinction per channel; w reserved.
     pub fog_density: Vec4,
@@ -536,9 +536,9 @@ pub fn update(
     let apply_globals = |material: &mut CascadeMaterial| {
         material.surface.apply_optics(&settings.water_optics);
         material.surface.debug.x = match *debug {
-            AquaDebug::Shaded | AquaDebug::ShallowComposite => DEBUG_MODE_BEAUTY,
+            AquaDebug::Shaded => DEBUG_MODE_BEAUTY,
             AquaDebug::ReflectionSanity => DEBUG_MODE_REFLECTION,
-            AquaDebug::FoamDensity | AquaDebug::FoamDensityBilinear => DEBUG_MODE_FOAM,
+            AquaDebug::FoamDensity => DEBUG_MODE_FOAM,
             AquaDebug::WaveHeight => DEBUG_MODE_WAVE_HEIGHT,
             AquaDebug::LightRadiance => DEBUG_MODE_LIGHT_RADIANCE,
             AquaDebug::ReflectionFraction => DEBUG_MODE_REFLECTION_FRACTION,
@@ -549,11 +549,6 @@ pub fn update(
             AquaDebug::TransmissionUnrefracted => DEBUG_MODE_UNREFRACTED,
             AquaDebug::BeerLambert => DEBUG_MODE_BEER_LAMBERT,
             AquaDebug::SeaFloorDepth => DEBUG_MODE_SEA_FLOOR,
-        };
-        material.surface.debug.w = if *debug == AquaDebug::FoamDensityBilinear {
-            1.0
-        } else {
-            0.0
         };
         material.surface.reflection.x = if waves.model == crate::WaveModel::Spectral {
             1.0

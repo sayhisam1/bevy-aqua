@@ -109,7 +109,7 @@ fn sample_foam_cascade(world_xz: vec2<f32>, cascade: CascadeParams, layer: i32) 
         0.0,
     ).r;
     // Gerstner's smooth source already hides its texels; bicubic taps only help FFT.
-    if surface.reflection.x < 0.5 || surface.debug.w > 0.5 {
+    if surface.reflection.x < 0.5 {
         return bilinear;
     }
     let bicubic = sample_foam_bicubic(uv, layer, FOAM_TEXTURE_RESOLUTION);
