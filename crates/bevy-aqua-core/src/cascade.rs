@@ -200,7 +200,7 @@ pub struct BodyParams {
     /// fragment discard active), 0.0 for ocean tiles. y: 1.0 when the body
     /// binds a flow texture; zw reserved.
     pub(crate) flags: Vec4,
-    /// xy: world-XZ centre; z: reserved; w: conservative radius in metres.
+    /// xy: world-XZ centre; z: reserved; w: conservative world-axis square half-extent in metres.
     extent: Vec4,
     /// xy: world-XZ AABB minimum of the flow-texture domain; zw reserved.
     aabb_min: Vec4,
@@ -230,7 +230,7 @@ impl BodyParams {
     /// The bounded-body parameters for one extent.
     pub const fn bounded(
         center: Vec2,
-        radius: f32,
+        half_extent: f32,
         aabb_min: Vec2,
         aabb_size: Vec2,
         has_flow: bool,
@@ -247,7 +247,7 @@ impl BodyParams {
         };
         Self {
             flags: Vec4::new(1.0, if has_flow { 1.0 } else { 0.0 }, 0.0, 0.0),
-            extent: Vec4::new(center.x, center.y, 0.0, radius),
+            extent: Vec4::new(center.x, center.y, 0.0, half_extent),
             aabb_min: Vec4::new(aabb_min.x, aabb_min.y, 0.0, 0.0),
             aabb_size: Vec4::new(aabb_size.x, aabb_size.y, 0.0, 0.0),
             optics_a: Vec4::new(extinction.x, extinction.y, extinction.z, enabled),

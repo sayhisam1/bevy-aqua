@@ -120,7 +120,8 @@ struct SurfaceParams {
 
 /// Localized-water extent controls; mirrors lod::BodyParams. flags.x is 1.0
 /// for bounded bodies: the vertex stage skips camera snap/morph and the
-/// fragment stage culls against extent.xy (centre) and extent.w (radius).
+/// fragment stage culls against the world-axis square whose centre is
+/// extent.xy and whose half-extent is extent.w.
 struct BodyParams {
     flags: vec4<f32>,
     extent: vec4<f32>,

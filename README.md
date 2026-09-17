@@ -196,6 +196,39 @@ shapes remain flat, matching their rendered geometry. The per-frame limit is
 256 probes. `WaveSurface::crest` exposes the same
 horizontal-compression source used to seed persistent whitecaps.
 
+### Spatial consistency (unreleased)
+
+These fixes make the renderer, queries, and baked fields agree about where
+water is. In plain terms:
+
+1. **Bounded-water distance uses its enclosing square.** The stored extent was
+   a square half-width but far culling treated it as a circle radius, so pond
+   corners could disappear too early. Forward and motion passes now measure
+   distance from the square. There is no API change; distant edge pixels and
+   motion coverage can change.
+2. **Ocean query LOD stays fixed in world space.** Flow should move wave phase,
+   not the LOD rings. Queries previously chose an LOD from the flow-shifted
+   sample point, so a stationary probe could cross LODs as time passed. LOD now
+   uses the requested world XZ while displacement still follows flow. There is
+   no API change; query values can change near LOD boundaries.
+3. **Shore fields publish their actual rounded texel region.** Image dimensions
+   are rounded up to whole texels, but the old metadata kept the pre-rounding
+   size. Sampling and baked texel centres could then disagree near the positive
+   X/Z edges. The region now spans `width * texel` by `height * texel`. There is
+   no API change; ownership, flow, and shore results can shift at edge texels.
+4. **Bed-map `size` means centre-to-centre span.** The implementation already
+   used `size` from the first texel centre to the last. Documentation had called
+   it an edge-to-edge image size. The docs now state `(N - 1) * step`. Runtime
+   behavior is unchanged, but maps authored from the old wording may need their
+   metadata corrected.
+5. **Pond-only worlds keep unused support vertices still.** Without an `Ocean`,
+   vertices outside bounded-water ownership could still receive ocean
+   displacement and motion history. They now remain flat while river-owned
+   vertices keep their river wave path. There is no API change; stray moving
+   pond-edge geometry disappears and motion vectors match.
+
+See [`MIGRATION.md`](MIGRATION.md) for the migration handoff.
+
 ### Spray
 
 Enable Cargo feature `spray`, then insert `SpraySettings` before `AquaPlugin`.

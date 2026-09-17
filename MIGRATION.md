@@ -1,5 +1,70 @@
 # Migration notes (unreleased)
 
+## Water spatial consistency
+
+The public Rust API, bind groups, and uniform layouts do not change. These
+fixes can change rendering, motion vectors, wave-query samples, or baked shore
+fields. Review relevant image and gameplay baselines.
+
+### ELI5 handoff
+
+1. **Bounded-water culling uses the shape of its stored extent.** Context: each
+   bounded body stores a world-axis square half-extent that encloses the body,
+   and both the forward and motion passes use it to skip water beyond the far
+   tier. What was wrong: the shader subtracted that half-extent as if it were a
+   circle radius, which makes the square's corners appear farther away than they
+   are. Why: the meaning of `BodyParams::extent.w` and the distance formula had
+   diverged. Fix: measure point-to-square distance in both passes and document
+   the field as a square half-extent. Visible result: bounded-water corners no
+   longer disappear early, and forward and motion coverage agree. Breaking: no
+   API or GPU layout change; far-away edge pixels and their motion vectors can
+   change.
+
+2. **Ocean query LOD is anchored to the requested world position.** Context:
+   world flow translates the phase used to sample waves, while ocean LOD rings
+   are fixed around the world-space cascade centre. What was wrong: GPU queries
+   selected and blended LOD from the flow-shifted sampling coordinate. A probe
+   that did not move could therefore cross an LOD boundary merely because time
+   passed. Why: one coordinate was reused for two different jobs. Fix: select
+   and blend LOD from `WaveQuery`'s requested world XZ, but retain the
+   flow-shifted coordinate for displacement and derivatives. Visible result:
+   stationary probes no longer get flow-driven LOD transitions; the waves still
+   move with flow. Breaking: no API/layout change; query displacement, normal,
+   and crest values can change near LOD boundaries.
+
+3. **Shore-field bounds match the baked texel grid.** Context: a requested
+   world region is rounded up to an integer image width and height before Aqua
+   bakes body ownership and flow at texel centres. What was wrong: field
+   metadata still described the smaller pre-rounding region, so texture
+   sampling did not map back to the centres used during baking. Why: dimensions
+   were rounded without recomputing their world span. Fix: publish a region size
+   of `(width * texel, height * texel)`. Visible result: ownership, flow,
+   shoreline foam, and shallow-water lookups stay aligned through the positive
+   X/Z edge texels. Breaking: no public API/layout change; edge texels and the
+   region's positive bounds can move by less than one texel.
+
+4. **`BedHeightMap::size` is documented as a texel-centre span.** Context:
+   `origin` is the world-XZ centre of texel `(0, 0)`. What was wrong: the docs
+   called `size` the whole image's edge-to-edge width, although the mapping uses
+   it as the distance from the first texel centre to the last. Why: the prose
+   did not match the existing coordinate convention. Fix: state that an axis
+   with `N` texels spaced by `step` uses `(N - 1) * step`. Visible result: none
+   for already correct inputs; newly authored maps line up with their intended
+   world coordinates. Breaking: runtime behavior is unchanged, but callers that
+   followed the old wording should correct their `size` metadata.
+
+5. **Unowned support vertices stay still in pond-only worlds.** Context: the
+   shared support mesh includes vertices around bounded bodies, and an absent
+   `Ocean` means that unowned area is not water. What was wrong: unowned
+   vertices still took the ocean displacement path, including its previous-frame
+   motion reconstruction, even though fragments outside a pond were discarded.
+   Why: the deformation path checked bounded ownership but not ocean presence.
+   Fix: keep unowned vertices at their current flat position when there is no
+   ocean; river-owned vertices retain the river path. Visible result: pond edges
+   no longer inherit stray moving ocean geometry, and motion history matches the
+   still geometry. Breaking: no API/layout change; pond-only edge rendering and
+   motion-vector baselines can change.
+
 ## Caustics and viewport refraction
 
 These changes do not alter the public Rust API, bind groups, or uniform layouts.
