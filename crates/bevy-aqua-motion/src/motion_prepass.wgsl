@@ -189,9 +189,10 @@ fn fragment(in: VertexOutput) -> FragmentOutput {
     let params = owning_body(slot);
     begin_invocation(bounded, params);
     if bounded {
-        let distance_to_extent = length(
-            params.extent.xy - view.world_position.xz,
-        ) - params.extent.w;
+        let distance_to_extent = length(max(
+            abs(view.world_position.xz - params.extent.xy) - vec2(params.extent.w),
+            vec2(0.0),
+        ));
         if distance_to_extent > surface.far_tier.y {
             discard;
         }

@@ -315,4 +315,14 @@ mod ocean_presence_tests {
         assert!(current < river && river < ocean);
         assert!(!shader.contains("else if !deformation.bounded {"));
     }
+
+    #[test]
+    fn bounded_motion_culling_uses_the_square_extent() {
+        let shader = include_str!("motion_prepass.wgsl");
+        assert!(
+            shader
+                .contains("abs(view.world_position.xz - params.extent.xy) - vec2(params.extent.w)")
+        );
+        assert!(!shader.contains("params.extent.xy - view.world_position.xz,"));
+    }
 }
