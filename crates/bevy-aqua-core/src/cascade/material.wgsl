@@ -93,6 +93,7 @@ fn prepare_surface_foam(
         white_foam = 1.0 - (1.0 - white_foam) * (1.0 - streak);
     }
     return FoamState(
+        foam_density + streak,
         visible_foam_density,
         white_foam_density,
         clamp(white_foam, 0.0, 1.0),
@@ -227,10 +228,12 @@ fn shade_water_body(
     let view_alignment = clamp(dot(near.lighting_normal, to_view), 0.0, 1.0);
     let fresnel = godot_fresnel(view_alignment);
     let foam_distance_fade = exp(-near.lighting_distance * 0.0075);
+    // Preserve the persistent-foam roughness response and add bank coverage
+    // before the single distance fade, independently of shoreline attenuation.
     let foam_factor = smoothstep(
         0.0,
         1.0,
-        foam.white_density * 0.75,
+        foam.roughness_density * 0.75,
     ) * foam_distance_fade;
     let foam_roughness = (1.0 - fresnel) * foam_factor;
     let environment_roughness = clamp(

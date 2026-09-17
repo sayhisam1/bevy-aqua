@@ -54,6 +54,7 @@ struct MediumState {
 }
 
 struct FoamState {
+    roughness_density: f32,
     visible_density: f32,
     white_density: f32,
     white_mask: f32,
