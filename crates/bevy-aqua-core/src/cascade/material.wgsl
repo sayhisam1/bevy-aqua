@@ -143,7 +143,7 @@ fn directional_scatter(
         let view_vertical = abs(to_view.y);
         let grazing = max(1.0 - view_vertical * view_vertical, 0.0);
         let dot_nv = max(dot(near.lighting_normal, to_view), 2e-5);
-        let sss_light_mask = smith_masking_shadowing(surface.sun.y, dot_nv);
+        let sss_light_mask = smith_masking_shadowing(dot_nv, surface.sun.y);
         let sss_near = 0.5 * pow(dot_nv, 2.0);
         let sss_height = max(0.0, in.sample_data.z + 2.5)
             * pow(max(dot(light_direction, -to_view), 0.0), 4.0)
@@ -290,8 +290,8 @@ fn shade_environment_and_sun(
         );
         let dot_nl = max(dot(near.lighting_normal, light_direction), 2e-5);
         let dot_nv = max(dot(near.lighting_normal, to_view), 2e-5);
-        let light_mask = smith_masking_shadowing(body_lighting.sun_roughness, dot_nv);
-        let view_mask = smith_masking_shadowing(body_lighting.sun_roughness, dot_nl);
+        let light_mask = smith_masking_shadowing(dot_nv, body_lighting.sun_roughness);
+        let view_mask = smith_masking_shadowing(dot_nl, body_lighting.sun_roughness);
         let distribution = ggx_distribution(
             clamp(dot(near.lighting_normal, halfway), 0.0, 1.0),
             body_lighting.sun_roughness,

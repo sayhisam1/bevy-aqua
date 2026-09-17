@@ -30,3 +30,6 @@ pub fn add_shader(app: &mut App) {
         ],
     });
 }
+
+#[cfg(test)]
+mod refraction_tests;

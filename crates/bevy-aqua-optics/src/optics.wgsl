@@ -145,7 +145,7 @@ fn far_field_water(
         let light_radiance = filtered_light_color * view.exposure;
         // Preserve broad SSS without near-only texture samples.
         let dot_nv = max(dot(lighting_normal, to_view), 2e-5);
-        let sss_light_mask = smith_masking_shadowing(surface.sun.y, dot_nv);
+        let sss_light_mask = smith_masking_shadowing(dot_nv, surface.sun.y);
         let sss_near = 0.5 * dot_nv * dot_nv;
         let sss_height = max(0.0, wave_height + 2.5)
             * pow(max(dot(light_direction, -to_view), 0.0), 4.0)
@@ -169,8 +169,8 @@ fn far_field_water(
         let halfway = safe_normalize(light_direction + to_view, lighting_normal);
         let dot_nl = max(dot(lighting_normal, light_direction), 2e-5);
         let dot_nv_sun = max(dot(lighting_normal, to_view), 2e-5);
-        let light_mask = smith_masking_shadowing(sun_roughness, dot_nv_sun);
-        let view_mask_sun = smith_masking_shadowing(sun_roughness, dot_nl);
+        let light_mask = smith_masking_shadowing(dot_nv_sun, sun_roughness);
+        let view_mask_sun = smith_masking_shadowing(dot_nl, sun_roughness);
         let distribution = ggx_distribution(
             clamp(dot(lighting_normal, halfway), 0.0, 1.0),
             sun_roughness,
@@ -193,17 +193,18 @@ fn far_field_water(
     return mix(body, reflected_radiance, reflection_weight);
 }
 
-fn camera_eye_depth(uv: vec2<f32>, raw_depth: f32) -> f32 {
+fn camera_view_position(uv: vec2<f32>, raw_depth: f32) -> vec3<f32> {
     let ndc = vec3(uv * vec2(2.0, -2.0) + vec2(-1.0, 1.0), raw_depth);
-    let view_position = view.view_from_clip * vec4(ndc, 1.0);
-    return max(-view_position.z / max(view_position.w, LUMINANCE_EPSILON), 0.0);
+    let position = view.view_from_clip * vec4(ndc, 1.0);
+    return position.xyz / max(position.w, LUMINANCE_EPSILON);
+}
+
+fn camera_eye_depth(uv: vec2<f32>, raw_depth: f32) -> f32 {
+    return max(-camera_view_position(uv, raw_depth).z, 0.0);
 }
 
 fn camera_eye_distance(uv: vec2<f32>, raw_depth: f32) -> f32 {
-    let ndc = vec3(uv * vec2(2.0, -2.0) + vec2(-1.0, 1.0), raw_depth);
-    let view_position = view.view_from_clip * vec4(ndc, 1.0);
-    let eye = view_position.xyz / max(view_position.w, LUMINANCE_EPSILON);
-    return length(eye);
+    return length(camera_view_position(uv, raw_depth));
 }
 
 fn reconstruct_world_from_uv(uv: vec2<f32>, raw_depth: f32) -> vec3<f32> {
@@ -264,25 +265,27 @@ fn resolve_transmission_sample(
 #ifdef DEPTH_PREPASS
     if allow_refraction {
         let shallow_gap = min(1.0, 0.5 * path.path_length);
-        let refract_offset = surface.debug.y * normal.xz
+        // Project the horizontal normal perturbation through this camera. Using
+        // world XZ as UV axes makes distortion rotate incorrectly with camera yaw
+        // and roll. The mean plane contributes no perturbation.
+        let clip_perturbation = view.clip_from_world * vec4(normal.x, 0.0, normal.z, 0.0);
+        let screen_perturbation = 0.5 * vec2(clip_perturbation.x, -clip_perturbation.y);
+        let refract_offset = surface.debug.y * screen_perturbation
             * shallow_gap / max(path.scene_z, LUMINANCE_EPSILON);
         let refracted_uv = clamp(path.screen_uv + refract_offset, vec2(0.0), vec2(1.0));
         let refracted_pixel = refracted_uv * (view.viewport.zw - vec2(1.0))
             + view.viewport.xy;
         let refracted_position = vec4(refracted_pixel, in.position.zw);
         let refracted_raw_depth = prepass_utils::prepass_depth(refracted_position, 0u);
-        result.refraction_valid = refracted_raw_depth < in.position.z;
+        result.refraction_valid = refracted_raw_depth > 0.0
+            && refracted_raw_depth < in.position.z;
         if result.refraction_valid {
             result.uv = refracted_uv;
             let surface_distance = length(in.world_position.xyz - view.world_position.xyz);
             let scene_distance = camera_eye_distance(refracted_uv, refracted_raw_depth);
             result.path_length = max(scene_distance - surface_distance, 0.0);
-            result.has_background = refracted_raw_depth > 0.0;
-            if result.has_background {
-                result.hit_y = reconstruct_world_from_uv(refracted_uv, refracted_raw_depth).y;
-            } else {
-                result.hit_y = 0.0;
-            }
+            result.has_background = true;
+            result.hit_y = reconstruct_world_from_uv(refracted_uv, refracted_raw_depth).y;
         }
     }
 #endif
@@ -641,4 +644,3 @@ fn shade_underside(
     window *= N_WATER * N_WATER;
     return vec4(mix(window, reflected, fresnel), 1.0);
 }
-
