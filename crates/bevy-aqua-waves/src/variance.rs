@@ -277,8 +277,23 @@ mod tests {
             fetch: 60_000.0,
             ..Default::default()
         };
-        let image = crate::fft::make_h0(&layout, 1.0, &author);
-        let table = spectral(&image, &layout);
+        for wind_radians in [0.0, 0.37, 1.2, 2.9] {
+            assert_partition_conserves_variance(
+                &layout,
+                &bevy_aqua_fft::SpectrumAuthoring {
+                    wind_radians,
+                    ..author
+                },
+            );
+        }
+    }
+
+    fn assert_partition_conserves_variance(
+        layout: &cascade::GpuLayout,
+        author: &bevy_aqua_fft::SpectrumAuthoring,
+    ) {
+        let image = crate::fft::make_h0(layout, 1.0, author);
+        let table = spectral(&image, layout);
         let n = image.texture_descriptor.size.width;
         let bytes = image.data.as_ref().unwrap();
         for band in 0..4 {
@@ -290,7 +305,7 @@ mod tests {
         let full = spectral_layer(bytes, n, 4, c.texel_width * c.texture_res);
         assert!((table[4..].iter().sum::<f32>() as f64 - full).abs() < 1e-6);
         assert!(table.iter().all(|v| v.is_finite() && *v > 0.0));
-        let zero = crate::fft::make_h0(&layout, 0.0, &author);
-        assert_eq!(spectral(&zero, &layout), [0.0; 8]);
+        let zero = crate::fft::make_h0(layout, 0.0, author);
+        assert_eq!(spectral(&zero, layout), [0.0; 8]);
     }
 }

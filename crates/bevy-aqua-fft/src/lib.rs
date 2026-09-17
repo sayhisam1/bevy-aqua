@@ -129,12 +129,40 @@ pub fn spectral_bin(
     })
 }
 
+fn validate_cascades(cascades: &[BinSpec]) {
+    for (index, cascade) in cascades.iter().enumerate() {
+        let period = cascade.texel_width * cascade.texture_res;
+        assert!(
+            period.is_finite() && period > 0.0,
+            "cascade {index}: FFT period must be finite and positive"
+        );
+        assert!(
+            cascade.min_wavelength.is_finite() && cascade.min_wavelength > 0.0,
+            "cascade {index}: min_wavelength must be finite and positive"
+        );
+        assert!(
+            cascade.max_wavelength.is_finite() && cascade.max_wavelength > 0.0,
+            "cascade {index}: max_wavelength must be finite and positive"
+        );
+        assert!(
+            cascade.min_wavelength < cascade.max_wavelength,
+            "cascade {index}: min_wavelength must be less than max_wavelength"
+        );
+    }
+}
+
 /// Returns the scale that gives the spectrum its target RMS surface height.
+///
+/// # Panics
+/// Panics if a cascade's period or wavelength bounds are not finite and positive,
+/// or its minimum wavelength is not less than its maximum.
 pub fn spectrum_normalization(
     resolution: u32,
     cascades: &[BinSpec],
     authoring: &SpectrumAuthoring,
 ) -> f32 {
+    // Validate once per generation, rather than once per spectral texel.
+    validate_cascades(cascades);
     let variance: f32 = cascades
         .iter()
         .copied()
@@ -149,6 +177,10 @@ pub fn spectrum_normalization(
 }
 
 /// Generates one deterministic h0 coefficient slice per cascade.
+///
+/// # Panics
+/// Panics for invalid cascade periods or wavelength intervals; see
+/// [`spectrum_normalization`].
 pub fn make_h0(
     resolution: u32,
     cascades: &[BinSpec],
@@ -186,6 +218,10 @@ pub fn make_h0(
 /// Phase-independent Fourier L1 displacement envelope per cascade,
 /// accumulated coarse-to-fine: slice `i` bounds every band it owns plus all
 /// finer ones combined into its AnimWaves output.
+///
+/// # Panics
+/// Panics for invalid cascade periods or wavelength intervals; see
+/// [`spectrum_normalization`].
 pub fn cumulative_height_bounds(
     resolution: u32,
     cascades: &[BinSpec],

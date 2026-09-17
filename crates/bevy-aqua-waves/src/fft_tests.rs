@@ -90,6 +90,8 @@ fn fft_displacement_bounds_match_deterministic_h0() {
     }
     let actual = cumulative_height_bounds(&layout, 1.0, &SpectrumAuthoring::default());
     for (actual, expected) in actual.into_iter().zip(expected) {
+        assert!(actual.is_finite());
+        assert!(actual as f64 >= expected, "{actual} understates {expected}");
         assert!(
             (actual as f64 - expected).abs() < 0.02,
             "{actual} != {expected}"

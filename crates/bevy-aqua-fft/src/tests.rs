@@ -83,11 +83,176 @@ fn spectrum_authoring_reshapes_h0_deterministically() {
 #[test]
 fn fft_displacement_bounds_match_deterministic_h0() {
     let cascades = default_cascades();
-    let expected = [252.608_06, 244.313_5, 227.737_76, 194.751_74, 129.361_68];
+    let field = make_h0(256, &cascades, 1.0, &SpectrumAuthoring::default());
+    let mut expected = vec![0.0_f64; cascades.len()];
+    for (index, rgba) in field.bytes.chunks_exact(16).enumerate() {
+        let re = f32::from_ne_bytes(rgba[..4].try_into().unwrap()) as f64;
+        let im = f32::from_ne_bytes(rgba[4..8].try_into().unwrap()) as f64;
+        expected[index / (256 * 256)] += 2.0 * re.hypot(im) / (256 * 256) as f64;
+    }
+    for band in (0..cascades.len() - 1).rev() {
+        expected[band] += expected[band + 1];
+    }
     let actual = cumulative_height_bounds(256, &cascades, 1.0, &SpectrumAuthoring::default());
     for (actual, expected) in actual.into_iter().zip(expected) {
-        assert!((actual - expected).abs() < 0.02, "{actual} != {expected}");
+        assert!(actual.is_finite());
+        assert!(actual as f64 >= expected, "{actual} understates {expected}");
+        assert!(
+            (actual as f64 - expected).abs() < 0.02,
+            "{actual} != {expected}"
+        );
     }
+}
+
+// Separate should_panic cases also work with the host's Cranelift test backend,
+// where a panic may escape an in-test catch_unwind.
+macro_rules! invalid_spec_test {
+    ($name:ident, $field:ident, $value:expr, $message:literal) => {
+        #[test]
+        #[should_panic(expected = $message)]
+        fn $name() {
+            let spec = BinSpec {
+                $field: $value,
+                ..default_cascades()[0]
+            };
+            make_h0(8, &[spec], 1.0, &SpectrumAuthoring::default());
+        }
+    };
+}
+
+invalid_spec_test!(
+    rejects_minimum_zero,
+    min_wavelength,
+    0.0,
+    "min_wavelength must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_minimum_negative,
+    min_wavelength,
+    -1.0,
+    "min_wavelength must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_minimum_nan,
+    min_wavelength,
+    f32::NAN,
+    "min_wavelength must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_minimum_infinite,
+    min_wavelength,
+    f32::INFINITY,
+    "min_wavelength must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_maximum_zero,
+    max_wavelength,
+    0.0,
+    "max_wavelength must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_maximum_negative,
+    max_wavelength,
+    -1.0,
+    "max_wavelength must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_maximum_nan,
+    max_wavelength,
+    f32::NAN,
+    "max_wavelength must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_maximum_infinite,
+    max_wavelength,
+    f32::INFINITY,
+    "max_wavelength must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_interval_equal,
+    min_wavelength,
+    1.5,
+    "min_wavelength must be less than max_wavelength"
+);
+invalid_spec_test!(
+    rejects_interval_reversed,
+    min_wavelength,
+    3.0,
+    "min_wavelength must be less than max_wavelength"
+);
+invalid_spec_test!(
+    rejects_texel_zero,
+    texel_width,
+    0.0,
+    "FFT period must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_texel_negative,
+    texel_width,
+    -1.0,
+    "FFT period must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_texel_nan,
+    texel_width,
+    f32::NAN,
+    "FFT period must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_texel_infinite,
+    texel_width,
+    f32::INFINITY,
+    "FFT period must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_texel_overflow,
+    texel_width,
+    f32::MAX,
+    "FFT period must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_resolution_zero,
+    texture_res,
+    0.0,
+    "FFT period must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_resolution_negative,
+    texture_res,
+    -1.0,
+    "FFT period must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_resolution_nan,
+    texture_res,
+    f32::NAN,
+    "FFT period must be finite and positive"
+);
+invalid_spec_test!(
+    rejects_resolution_infinite,
+    texture_res,
+    f32::INFINITY,
+    "FFT period must be finite and positive"
+);
+
+#[test]
+#[should_panic(expected = "min_wavelength must be less than max_wavelength")]
+fn normalization_rejects_invalid_interval() {
+    let spec = BinSpec {
+        min_wavelength: 3.0,
+        ..default_cascades()[0]
+    };
+    spectrum_normalization(8, &[spec], &SpectrumAuthoring::default());
+}
+
+#[test]
+#[should_panic(expected = "min_wavelength must be less than max_wavelength")]
+fn bounds_reject_invalid_interval() {
+    let spec = BinSpec {
+        min_wavelength: 3.0,
+        ..default_cascades()[0]
+    };
+    cumulative_height_bounds(8, &[spec], 1.0, &SpectrumAuthoring::default());
 }
 
 #[test]
