@@ -16,6 +16,7 @@ struct CameraDepthPath {
     path_length: f32,
     screen_uv: vec2<f32>,
     scene_z: f32,
+    receiver_world: vec3<f32>,
     has_background: bool,
 }
 
@@ -24,6 +25,8 @@ struct CameraDepthDebug {
     refracted_path_length: f32,
     screen_uv: vec2<f32>,
     refracted_uv: vec2<f32>,
+    raw_receiver_world: vec3<f32>,
+    refracted_receiver_world: vec3<f32>,
     refracted_sample_valid: bool,
     has_background: bool,
 }

@@ -130,6 +130,21 @@ applications; it is not inherited from a library's manifest.
 to `None` to skip both texture samples. Hosts can update
 `CausticsSunVisibility` to fold cloud-shadow coverage into the direct sun.
 
+Caustic patterns are anchored to the opaque receiver selected by transmission,
+including accepted refraction or its raw fallback. The receiver must be submerged
+in the transmitting body; its depth uses that body's local water level. Missing,
+exposed, and cross-body receivers omit the caustic contribution.
+
+Mip selection uses four neighboring depth samples after caustic admission. These
+hold the central refraction offset fixed, rather than replaying neighboring
+normals and refraction acceptance. A neighbor view-depth jump above
+`max(0.05 m, 1% of receiver view depth)` suppresses the contribution. This
+heuristic can reject steep continuous surfaces and miss small discontinuities;
+it is not a surface-identity test or exact refracted filtering. Sun/shadow
+selection remains at the water fragment. The pattern and incoming attenuation
+are still flat-interface surrogates, not traced sun-to-receiver caustics.
+Disabling caustics also skips these four neighbor reads.
+
 ### Terrain bed
 
 Insert a `BedHeightMap` before `AquaPlugin`. Its single-channel image stores
@@ -224,6 +239,15 @@ CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-server-runner \
 ```
 
 See [`examples/README.md`](examples/README.md) for the full command list.
+
+## Screen-space refraction limitation
+
+Refraction validates one opaque depth texel, while transmission color uses linear
+filtering. At a foreground silhouette, a neighboring above-water opaque texel can
+therefore contribute color even when `RefractionValidity` accepts the sample.
+Viewport-edge color clamping does not prevent this interior silhouette case.
+`RefractionValidity` is not proof that every filtered color contributor lies
+behind the water.
 
 ## Lighting appearance (unreleased)
 

@@ -183,7 +183,7 @@ fn wgsl_projection_and_metric_reconstruction_match_cpu_contracts() {
     );
     assert_shader_contains("result.refracted_path_length = path.path_length;");
     assert_shader_contains(
-        "result.refracted_sample_valid = refracted_raw_depth > 0.0 && refracted_raw_depth < in.position.z; if result.refracted_sample_valid { let background = camera_view_position(result.refracted_uv, refracted_raw_depth); let water = (view.view_from_world * in.world_position).xyz; result.refracted_path_length = length(background - water); }",
+        "result.refracted_sample_valid = refracted_raw_depth > 0.0 && refracted_raw_depth < in.position.z; if result.refracted_sample_valid { let background = camera_view_position(result.refracted_uv, refracted_raw_depth); let water = (view.view_from_world * in.world_position).xyz; result.refracted_path_length = length(background - water); result.refracted_receiver_world = (view.world_from_view * vec4(background, 1.0)).xyz; }",
     );
 }
 
@@ -220,7 +220,7 @@ fn wgsl_beauty_gates_and_attenuates_the_accepted_path() {
             "if !(minimum_extinction * water_path < TRANSMISSION_OPAQUE_OPTICAL_DEPTH) { return scatter_colour; }",
             "let background_uv = select(depth_debug.screen_uv, depth_debug.refracted_uv, use_refraction,);",
             "let scene_colour = opaque_background(background_uv);",
-            "let lit_scene = illuminate_bed(scene_colour, in, medium, primary);",
+            "let lit_scene = illuminate_bed(scene_colour, in, primary, depth_debug, use_refraction, background_uv, source_slot,);",
             "let alpha = 1.0 - exp(-extinction * water_path); return mix(lit_scene, scatter_colour, alpha);",
         ],
     );
@@ -238,7 +238,7 @@ fn wgsl_transmission_routes_modes_before_sampling_and_reuses_foam_depth() {
             "let is_diagnostic = mode >= DEBUG_MODE_WATER_PATH && mode <= DEBUG_MODE_SEA_FLOOR;",
             "if mode != DEBUG_MODE_BEAUTY && !is_diagnostic { return TransmissionState(scatter_colour, vec4(0.0), false); }",
             "var shared_depth_path = foam.depth_path; if !foam.has_depth_path { shared_depth_path = camera_depth_path(in); }",
-            "if mode == DEBUG_MODE_BEAUTY { let body = beauty_transmission(in, normal, scatter_colour, medium, primary, shared_depth_path); return TransmissionState(body, vec4(0.0), false); }",
+            "if mode == DEBUG_MODE_BEAUTY { let body = beauty_transmission(in, normal, scatter_colour, medium, primary, shared_depth_path, source_slot,); return TransmissionState(body, vec4(0.0), false); }",
             "let depth_debug = camera_depth_debug_from_path(in, normal, shared_depth_path);",
             "if mode == DEBUG_MODE_WATER_PATH {",
             "return TransmissionState(body, vec4(vec3(path), 1.0), true);",
@@ -249,7 +249,7 @@ fn wgsl_transmission_routes_modes_before_sampling_and_reuses_foam_depth() {
             "let background_uv = select(depth_debug.screen_uv, depth_debug.refracted_uv, use_refraction,);",
             "let scene_colour = opaque_background(background_uv);",
             "if mode == DEBUG_MODE_TRANSMISSION || mode == DEBUG_MODE_UNREFRACTED { return TransmissionState(body, vec4(scene_colour, 1.0), true); }",
-            "let lit_scene = illuminate_bed(scene_colour, in, medium, primary);",
+            "let lit_scene = illuminate_bed(scene_colour, in, primary, depth_debug, use_refraction, background_uv, source_slot,);",
             "let water_path = select(depth_debug.path_length, depth_debug.refracted_path_length, use_refraction,);",
             "let alpha = 1.0 - exp(-invocation_extinction() * water_path);",
             "body = mix(lit_scene, scatter_colour, alpha);",
@@ -265,4 +265,27 @@ fn wgsl_transmission_routes_modes_before_sampling_and_reuses_foam_depth() {
     assert!(!resolve.contains("TRANSMISSION_OPAQUE_OPTICAL_DEPTH"));
     assert!(!resolve.contains("has_background"));
     assert!(!resolve.contains("shallow_extinction_scale"));
+}
+
+#[test]
+fn wgsl_braces_are_balanced() {
+    let mut depth = 0i32;
+    for (line_index, line) in OPTICS.lines().enumerate() {
+        let code = line.split("//").next().unwrap_or("");
+        for character in code.chars() {
+            match character {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    assert!(
+                        depth >= 0,
+                        "WGSL has an unmatched closing brace on line {}",
+                        line_index + 1
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(depth, 0, "WGSL has unmatched opening braces");
 }

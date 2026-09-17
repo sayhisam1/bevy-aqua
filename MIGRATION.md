@@ -1,5 +1,71 @@
 # Migration notes (unreleased)
 
+## Caustics and viewport refraction
+
+These changes do not alter the public Rust API, bind groups, or uniform layouts.
+They can change rendered water, so update image baselines after reviewing the
+following behavior.
+
+### ELI5 handoff
+
+1. **Incoming caustic attenuation follows the refracted sun ray.** Context:
+   caustics fade according to the distance that sunlight travels underwater.
+   What was wrong: that distance extended the air-side ray straight through the
+   water. Why: the attenuation path did not apply Snell refraction. Fix: compute
+   the transmitted air-to-water direction before measuring the underwater path.
+   Visible result: low-sun caustics keep a more local, physically plausible
+   contribution; overhead sun is effectively unchanged. Breaking: no API or GPU
+   layout change, but low-angle visual baselines can change.
+
+2. **Caustic textures use footprint-selected mipmaps.** Context: a screen pixel
+   can cover many cells of the caustic pattern. What was wrong: always sampling
+   mip zero made distant or small cells shimmer and alias. Why: the shader did
+   not match texture detail to the pixel's world-space footprint. Fix: generate
+   an area-average R8 mip chain from full-precision means and use explicit,
+   trilinear LODs for both pattern layers. Visible result: minified caustics are
+   steadier while close detail remains. Breaking: no API/layout change; the
+   texture has extra mip storage and visual baselines can change.
+
+3. **Caustics attach to the accepted transmission receiver.** Context: the bed
+   seen through water can move after refraction and can belong to a bounded water
+   body. What was wrong: caustics used the water fragment's undisplaced XZ and
+   water depth instead of the accepted background hit. Why: the old path never
+   carried the reconstructed receiver into caustic lighting. Fix: reuse the raw
+   or accepted refracted world position, reject exposed or cross-body hits, and
+   derive a conservative four-neighbor footprint. Visible result: caustics stay
+   on the transmitted bed instead of sliding with the water surface or leaking
+   across bodies. Breaking: no public API/layout change; caustics can disappear
+   at rejected depth edges, and this is still a heuristic rather than a physical
+   sun-to-bed trace.
+
+4. **Refracted depth uses viewport-sized pixel addressing.** Context: depth
+   validation converts a continuous viewport UV to a depth texel. What was
+   wrong: multiplying by `viewport_size - 1` compressed the mapping and could
+   select the neighboring pixel. Why: endpoint interpolation was used where a
+   containing-texel lookup was required. Fix: multiply by the full viewport size
+   and clamp only the endpoint. Visible result: refraction validity and caustic
+   receiver checks line up with viewport pixels. Breaking: no API/layout change;
+   edge and one-pixel visual decisions can change.
+
+5. **Transmission color filtering stays inside its viewport.** Context: the
+   transmission texture can contain several viewports or unused backing area.
+   What was wrong: clamping only to the whole texture allowed linear filtering
+   near an edge to blend a neighboring viewport texel. Why: normalized viewport
+   coordinates were converted without a half-texel viewport inset. Fix: clamp
+   the color sample center from the first to last texel center of this viewport.
+   Visible result: viewport borders no longer bleed adjacent transmission color.
+   Breaking: no API/layout change; border pixels can change.
+
+6. **Foreground silhouettes remain a documented limit.** Context: depth
+   admission checks one opaque texel, while transmission color is linearly
+   filtered. What is still wrong: an accepted sample can blend a neighboring
+   foreground texel above the water at an interior silhouette. Why: one depth
+   decision cannot prove that every color-filter contributor lies behind the
+   water. Current choice: retain the existing admission and sampler rather than
+   ship an unvalidated footprint rejection. Visible result: rare silhouette
+   color bleed can remain even when `RefractionValidity` is accepted. Breaking:
+   none; this item documents unchanged behavior.
+
 ## Water shading consistency
 
 The water shader now samples body ownership as a discrete integer ID. Custom
