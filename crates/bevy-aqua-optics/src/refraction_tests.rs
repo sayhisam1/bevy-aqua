@@ -215,7 +215,7 @@ fn wgsl_beauty_gates_and_attenuates_the_accepted_path() {
             "if !(depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON) { return scatter_colour; }",
             "let depth_debug = camera_depth_debug_from_path(in, normal, depth_path);",
             "let use_refraction = depth_debug.refracted_sample_valid; let water_path = select(depth_debug.path_length, depth_debug.refracted_path_length, use_refraction,);",
-            "let extinction = invocation_extinction() * shallow_extinction_scale;",
+            "let extinction = beauty_extinction(medium.water_depth);",
             "let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));",
             "if !(minimum_extinction * water_path < TRANSMISSION_OPAQUE_OPTICAL_DEPTH) { return scatter_colour; }",
             "let background_uv = select(depth_debug.screen_uv, depth_debug.refracted_uv, use_refraction,);",

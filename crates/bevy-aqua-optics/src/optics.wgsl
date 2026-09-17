@@ -8,11 +8,11 @@
     mesh_view_bindings::{globals, lights, view},
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
-#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, invocation_extinction, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, surface}
+#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, invocation_extinction, invocation_scatter_scale, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, surface}
 #import aqua::waves::displace::{WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, detail_normal_sample}
 #import aqua::foam::shade::{sample_foam_density}
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
-#import aqua::light::incident::{GODOT_NORMAL_FADE_RATE, GODOT_NORMAL_MINIMUM_STRENGTH, GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, safe_normalize, sample_diffuse_environment, sample_environment, smith_masking_shadowing, strongest_incident_directional_light}
+#import aqua::light::incident::{GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, safe_normalize, sample_diffuse_environment, sample_environment, smith_masking_shadowing, strongest_incident_directional_light}
 #import bevy_aqua_core::material::{CameraDepthDebug, CameraDepthPath, FoamState, MediumState, NearSurface, PrimaryLightState, SurfaceVertexOutput, TransmissionState}
 
 // A 2^-10 residual in the least-attenuated channel bounds body error to
@@ -28,13 +28,12 @@ fn unresolved_wave_roughness(
     world_xz: vec2<f32>,
     to_view: vec3<f32>,
     lod_alpha: f32,
-    lighting_normal_strength: f32,
+    near_detail_weight: f32,
     filtered_detail_variance: f32,
 ) -> f32 {
     let footprint = screen_xz_footprint();
     let unresolved_wavelength = 2.0 * footprint;
     var unresolved_variance = 0.0;
-    var resolved_variance = 0.0;
     let spectral = surface.reflection.x > 0.5;
     let band_count = select(5u, 8u, spectral);
     for (var band = 0u; band < band_count; band++) {
@@ -56,33 +55,30 @@ fn unresolved_wave_roughness(
         );
         let band_variance = surface.wave_slope_variance[band / 4u][band % 4u];
         unresolved_variance += unresolved_fraction * band_variance;
-        resolved_variance += (1.0 - unresolved_fraction) * band_variance;
     }
 
     let lod_blend_energy = 2.0 * (
         (1.0 - lod_alpha) * (1.0 - lod_alpha) + lod_alpha * lod_alpha
     );
+    let ripple = invocation_ripple();
     let detail_variance = WAVE_NORMALS_SLOPE_VARIANCE
         * lod_blend_energy
         * surface.detail.y * surface.detail.y
-        * surface.detail.z * surface.detail.z;
-    let filtered_variance = min(filtered_detail_variance, detail_variance);
-    unresolved_variance += filtered_variance;
-    resolved_variance += detail_variance - filtered_variance;
+        * surface.detail.z * surface.detail.z
+        * ripple * ripple;
+    let near_energy = near_detail_weight * near_detail_weight;
+    // filtered_detail_variance already includes near_energy. Transfer the
+    // energy removed by the far-tier fade as well as the texture mip filter.
+    let filtered_variance = min(filtered_detail_variance, near_energy * detail_variance);
+    unresolved_variance += filtered_variance + (1.0 - near_energy) * detail_variance;
     let capillary_resolved = capillary_resolved_weight(world_xz);
     let capillary_variance = WAVE_NORMALS_SLOPE_VARIANCE
-        * surface.capillary.y * surface.capillary.y;
+        * surface.capillary.y * surface.capillary.y * ripple * ripple;
     unresolved_variance += capillary_variance
-        * (1.0 - capillary_resolved * capillary_resolved);
-    resolved_variance += capillary_variance
-        * capillary_resolved * capillary_resolved;
+        * (1.0 - near_energy * capillary_resolved * capillary_resolved);
 
-    // GodotOceanWaves fades all lighting slopes with distance. Move the
-    // removed resolved variance into LEADR roughness instead of deleting it.
-    let removed_fraction = 1.0
-        - lighting_normal_strength * lighting_normal_strength;
-    var slope_variance = unresolved_variance
-        + removed_fraction * resolved_variance;
+    // Geometric wave slopes retain unit strength; only detail terms fade.
+    var slope_variance = unresolved_variance;
     let grazing_boost = mix(1.0, 1.5, 1.0 - abs(to_view.y));
     slope_variance *= surface.reflection.y * grazing_boost;
     return min(sqrt(max(slope_variance, 0.0)), surface.reflection.w);
@@ -104,22 +100,14 @@ fn depth_aware_body_albedo(
 }
 
 fn far_field_water(
-    world_position: vec4<f32>,
+    in: SurfaceVertexOutput,
     surface_level: f32,
-    geometric_normal: vec3<f32>,
+    near: NearSurface,
     to_view: vec3<f32>,
-    wave_height: f32,
     water_depth: f32,
 ) -> vec3<f32> {
-    let geometric_slope = geometric_normal.xz / max(geometric_normal.y, MIN_NORMAL_Y);
-    let lighting_normal = safe_normalize(
-        vec3(
-            geometric_slope.x * GODOT_NORMAL_MINIMUM_STRENGTH,
-            1.0,
-            geometric_slope.y * GODOT_NORMAL_MINIMUM_STRENGTH,
-        ),
-        vec3(0.0, 1.0, 0.0),
-    );
+    // Reuse the accepted candidate-tier surface, including safe slope reconstruction.
+    let lighting_normal = near.lighting_normal;
     let view_vertical = abs(to_view.y);
     let deep_body_albedo = mix(
         surface.grazing_color.rgb,
@@ -129,17 +117,26 @@ fn far_field_water(
     // Camera distance must not turn a shallow lake into deep ocean. Keep the
     // near path's bed-depth color classification while omitting transmission.
     let body_albedo = depth_aware_body_albedo(water_depth, deep_body_albedo);
-    let diffuse_irradiance = sample_diffuse_environment(vec3(0.0, 1.0, 0.0));
-    var body = diffuse_irradiance * (body_albedo + GODOT_WATER_ALBEDO);
+    let diffuse_irradiance = sample_diffuse_environment(lighting_normal);
+    // Match the near lane: the per-body scale applies to volume scatter,
+    // not the Godot substrate diffuse term or surface reflections.
+    let scatter_scale = invocation_scatter_scale();
+    var body = diffuse_irradiance * (body_albedo * scatter_scale + GODOT_WATER_ALBEDO);
 
-    let perceptual_roughness = max(surface.reflection.w, 0.05);
+    let perceptual_roughness = unresolved_wave_roughness(
+        in.undisplaced_xz,
+        to_view,
+        in.sample_data.y,
+        near.near_detail_weight,
+        near.filtered_detail_variance,
+    );
     let reflection = reflect(-to_view, lighting_normal);
     var reflected_radiance = sample_environment(
         reflection,
         lighting_normal,
         perceptual_roughness,
     );
-    let planar = sample_planar_reflection(world_position.xyz, surface_level, lighting_normal, perceptual_roughness);
+    let planar = sample_planar_reflection(in.world_position.xyz, surface_level, lighting_normal, perceptual_roughness);
     reflected_radiance = mix(reflected_radiance, planar.color, planar.weight);
     if lights.n_directional_lights > 0u {
         let light = lights.directional_lights[0u];
@@ -148,7 +145,7 @@ fn far_field_water(
             vec3(0.0, 1.0, 0.0),
         );
         let filtered_light_color = filtered_primary_light_color(
-            world_position,
+            in.world_position,
             light.direction_to_light,
             light.sun_disk_angular_size,
             light.color.rgb,
@@ -160,7 +157,7 @@ fn far_field_water(
         let dot_nv = max(dot(lighting_normal, to_view), 2e-5);
         let sss_light_mask = smith_masking_shadowing(dot_nv, invocation_sun_roughness());
         let sss_near = 0.5 * dot_nv * dot_nv;
-        let sss_height = max(0.0, wave_height + 2.5)
+        let sss_height = max(0.0, in.sample_data.z + 2.5)
             * pow(max(dot(light_direction, -to_view), 0.0), 4.0)
             * pow(
                 0.5 - 0.5 * dot(light_direction, lighting_normal),
@@ -168,7 +165,7 @@ fn far_field_water(
             );
         body += (sss_height + sss_near)
             * GODOT_SSS_MODIFIER / (1.0 + sss_light_mask)
-            * light_radiance * GODOT_WATER_ALBEDO;
+            * light_radiance * GODOT_WATER_ALBEDO * scatter_scale;
         let sun_roughness = min(sqrt(
             invocation_sun_roughness() * invocation_sun_roughness()
                 + perceptual_roughness * perceptual_roughness,
@@ -306,41 +303,36 @@ fn resolve_near_surface(
     if mode >= DEBUG_MODE_BEAUTY {
         let near_weight = 1.0 - far_tier;
         var resolved_slope = normal.xz / max(normal.y, MIN_NORMAL_Y);
-        let detail = detail_normal_sample(
-            in.undisplaced_xz,
-            surface_lod,
-            in.sample_data.y,
-            invocation_ripple(),
-        );
-        resolved_slope += near_weight * detail.xy;
-        filtered_detail_variance = near_weight * near_weight * detail.z;
-        resolved_slope += near_weight * capillary_normal_slope(in.undisplaced_xz, invocation_ripple())
-            * capillary_resolved_weight(in.undisplaced_xz);
+        // At exactly zero near weight, omit only the finite detail terms.
+        // Keep slope reconstruction below: a geometric normal can have Y <= 0.
+        if near_weight != 0.0 {
+            let detail = detail_normal_sample(
+                in.undisplaced_xz,
+                surface_lod,
+                in.sample_data.y,
+                invocation_ripple(),
+            );
+            resolved_slope += near_weight * detail.xy;
+            filtered_detail_variance = near_weight * near_weight * detail.z;
+            resolved_slope += near_weight * capillary_normal_slope(in.undisplaced_xz, invocation_ripple())
+                * capillary_resolved_weight(in.undisplaced_xz);
+        }
         normal = safe_normalize(
             vec3(resolved_slope.x, 1.0, resolved_slope.y),
             vec3(0.0, 1.0, 0.0),
         );
     }
     let lighting_distance = length(in.world_position.xz - view.world_position.xz);
-    let lighting_normal_strength = mix(
-        GODOT_NORMAL_MINIMUM_STRENGTH,
-        1.0,
-        exp(-lighting_distance * GODOT_NORMAL_FADE_RATE),
-    );
     let full_slope = normal.xz / max(normal.y, MIN_NORMAL_Y);
     let lighting_normal = safe_normalize(
-        vec3(
-            full_slope.x * lighting_normal_strength,
-            1.0,
-            full_slope.y * lighting_normal_strength,
-        ),
+        vec3(full_slope.x, 1.0, full_slope.y),
         vec3(0.0, 1.0, 0.0),
     );
     return NearSurface(
         normal,
         lighting_normal,
         lighting_distance,
-        lighting_normal_strength,
+        1.0 - far_tier,
         filtered_detail_variance,
     );
 }
@@ -408,6 +400,12 @@ fn illuminate_bed(
     );
 }
 
+// Beauty-only attenuation. Diagnostics intentionally retain authored extinction.
+fn beauty_extinction(water_depth: f32) -> vec3<f32> {
+    let scale = mix(vec3(0.52, 0.42, 0.62), vec3(1.0), deep_water_weight(water_depth));
+    return invocation_extinction() * scale;
+}
+
 // Beauty skips color sampling when there is no usable background or the accepted
 // water path is opaque. Diagnostics deliberately bypass these shortcuts.
 fn beauty_transmission(
@@ -430,9 +428,7 @@ fn beauty_transmission(
         use_refraction,
     );
     // Reduce extinction in the first few metres so the seabed stays visible.
-    let deep_weight = smoothstep(0.35, surface.shallow_color.a, medium.water_depth);
-    let shallow_extinction_scale = mix(vec3(0.52, 0.42, 0.62), vec3(1.0), deep_weight);
-    let extinction = invocation_extinction() * shallow_extinction_scale;
+    let extinction = beauty_extinction(medium.water_depth);
     let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));
     // Refraction can reveal a shallower bed: test the accepted path, not the original.
     if !(minimum_extinction * water_path < TRANSMISSION_OPAQUE_OPTICAL_DEPTH) {
@@ -448,6 +444,29 @@ fn beauty_transmission(
     let lit_scene = illuminate_bed(scene_colour, in, medium, primary);
     let alpha = 1.0 - exp(-extinction * water_path);
     return mix(lit_scene, scatter_colour, alpha);
+}
+
+// Admission uses the same path selection and attenuation as near beauty.
+// False means keep near transmission; true also covers no transmissive
+// background under the existing contract (not proof of physical opacity).
+fn far_path_opaque(
+    in: SurfaceVertexOutput,
+    normal: vec3<f32>,
+    path: CameraDepthPath,
+) -> bool {
+    if !path.has_background || path.path_length <= LUMINANCE_EPSILON {
+        return true;
+    }
+    let accepted = camera_depth_debug_from_path(in, normal, path);
+    let water_path = select(
+        accepted.path_length,
+        accepted.refracted_path_length,
+        accepted.refracted_sample_valid,
+    );
+    let depth = blended_water_depth(in.undisplaced_xz);
+    let extinction = beauty_extinction(depth);
+    let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));
+    return minimum_extinction * water_path >= TRANSMISSION_OPAQUE_OPTICAL_DEPTH;
 }
 
 fn resolve_transmission(

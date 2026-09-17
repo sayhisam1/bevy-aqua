@@ -1,5 +1,28 @@
 # Migration notes (unreleased)
 
+## Water shading consistency
+
+The water shader now samples body ownership as a discrete integer ID. Custom
+field textures and shader integrations must keep ownership IDs exact. Do not
+filter or blend IDs between neighboring texels.
+
+Far water now applies each body's scatter scale and only enters the opaque far
+path after checking the accepted camera or refraction path with the same
+beauty-extinction rule as near water. Transparent beds can therefore remain on
+the near path at distances where older versions switched to opaque far shading.
+
+Resolved geometric and FFT wave slopes no longer fade out with lighting
+distance. Only detail-normal and capillary amplitudes fade toward the far tier;
+their removed energy transfers into unresolved roughness. Custom shader copies
+of `NearSurface` must replace `lighting_normal_strength` with
+`near_detail_weight` in the same field position and pass it to
+`unresolved_wave_roughness`.
+
+The default `WaterOptics::sun_roughness` is now `0.04` instead of `0.4`.
+Existing scenes that relied on the old broad direct-sun highlight should set
+`sun_roughness: 0.4` explicitly. Per-body non-negative overrides still win;
+negative values inherit the ocean setting.
+
 ## Wave spectrum and source-derived roughness
 
 ### `BinSpec.min_wavelength`
@@ -66,9 +89,8 @@ attenuation. Partial-band filtering assumes a uniform
 energy distribution in log wavelength within each stored interval. Detail
 normal and capillary variance still use their separate existing estimates.
 
-Near-water roughness now uses the selected source variance with the existing
-detail-strength multiplier, lighting-normal fade, grazing boost, and roughness
-cap. `WaterOptics::sun_roughness` still controls direct-light highlight width.
-The far tier still uses the existing fixed roughness cap; it does not integrate
-the new variance table. This change does not alter far-tier opacity or replace
-the resolved-normal pipeline.
+Near and far water roughness use the selected source variance with the existing
+detail-strength multiplier, grazing boost, and roughness cap.
+`WaterOptics::sun_roughness` controls direct-light highlight width. Resolved
+geometric and FFT slopes remain in the lighting normal; detail and capillary
+energy removed by mip or far-tier fades transfers into unresolved roughness.

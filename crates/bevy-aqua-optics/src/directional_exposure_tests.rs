@@ -69,7 +69,7 @@ fn far_sun_consumes_filtered_exposed_radiance_without_lux_normalization() {
     let far = function(OPTICS, "far_field_water");
     assert_contains(
         &far,
-        "let filtered_light_color = filtered_primary_light_color(world_position, light.direction_to_light, light.sun_disk_angular_size, light.color.rgb,);",
+        "let filtered_light_color = filtered_primary_light_color(in.world_position, light.direction_to_light, light.sun_disk_angular_size, light.color.rgb,);",
     );
     assert_contains(
         &far,

@@ -32,7 +32,8 @@ struct NearSurface {
     normal: vec3<f32>,
     lighting_normal: vec3<f32>,
     lighting_distance: f32,
-    lighting_normal_strength: f32,
+    // Amplitude retained by the far-tier detail fade; geometric slopes stay unchanged.
+    near_detail_weight: f32,
     filtered_detail_variance: f32,
 }
 
