@@ -3,7 +3,13 @@
 //! Run with `cargo run --example river`. Browser instructions are in
 //! `examples/README.md`.
 
-use bevy::{core_pipeline::prepass::DepthPrepass, prelude::*};
+use bevy::{
+    camera::{Exposure, Hdr},
+    core_pipeline::prepass::DepthPrepass,
+    light::{Atmosphere, AtmosphereEnvironmentMapLight, atmosphere::ScatteringMedium},
+    pbr::AtmosphereSettings,
+    prelude::*,
+};
 use bevy_aqua::{
     AquaPlugin, AquaSettings, ReflectionMode, RiverPath, RiverPoint, WaterBody, WaterOptics,
     WaterShape,
@@ -25,9 +31,18 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut scattering_media: ResMut<Assets<ScatteringMedium>>,
 ) {
+    // The visible sky also supplies the water's reflected environment light.
+    commands.spawn(Atmosphere::earth(
+        scattering_media.add(ScatteringMedium::earth(256, 256)),
+    ));
     commands.spawn((
         Camera3d::default(),
+        Hdr,
+        Exposure { ev100: 12.0 },
+        AtmosphereSettings::default(),
+        AtmosphereEnvironmentMapLight::default(),
         DepthPrepass,
         Transform::from_xyz(0.0, 42.0, 52.0).looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
     ));
