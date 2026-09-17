@@ -37,6 +37,7 @@ struct MirrorCamera;
 struct MirrorSlot {
     entity: Entity,
     image: Handle<Image>,
+    raw: Handle<Image>,
 }
 
 #[derive(Resource, Debug, Default)]
@@ -56,7 +57,6 @@ struct Scene<'w, 's> {
             &'static Projection,
             &'static GlobalTransform,
             Option<&'static Exposure>,
-            Option<&'static AtmosphereSettings>,
         ),
         (With<OceanView>, Without<AuxiliaryWaterView>),
     >,
@@ -84,6 +84,10 @@ pub(super) fn add(app: &mut App) {
             PostUpdate,
             (
                 include_marked,
+                remove_mirror_atmosphere.before(sync_mirrors),
+                sync_mirror_environment
+                    .after(sync_mirrors)
+                    .before(CameraUpdateSystems),
                 sync_mirrors
                     .after(CascadeMaterialsUpdated)
                     .after(TransformSystems::Propagate)
@@ -129,6 +133,38 @@ fn include_directional_lights(
     }
 }
 
+// Keep this independent of synchronization's material/view prerequisites.
+// Mirror targets contain geometry only. Atmosphere generation from a reflected,
+// potentially below-ground eye can overwrite the main view's environment map.
+fn remove_mirror_atmosphere(
+    mut commands: Commands,
+    mirrors: Query<Entity, (With<MirrorCamera>, With<AtmosphereSettings>)>,
+) {
+    for entity in &mirrors {
+        commands.entity(entity).remove::<AtmosphereSettings>();
+    }
+}
+
+// Inherit lighting, not the atmosphere generator or sky renderer. Running after
+// synchronization also initializes newly spawned mirrors in the same frame.
+fn sync_mirror_environment(
+    mut commands: Commands,
+    main: Query<
+        Option<&EnvironmentMapLight>,
+        (With<Camera>, With<OceanView>, Without<AuxiliaryWaterView>),
+    >,
+    mirrors: Query<Entity, (With<MirrorCamera>, With<AuxiliaryWaterView>)>,
+) {
+    let environment = main.single().ok().flatten();
+    for entity in &mirrors {
+        if let Some(environment) = environment {
+            commands.entity(entity).insert(environment.clone());
+        } else {
+            commands.entity(entity).remove::<EnvironmentMapLight>();
+        }
+    }
+}
+
 fn sync_mirrors(
     mut commands: Commands,
     settings: Res<AquaSettings>,
@@ -149,9 +185,7 @@ fn sync_mirrors(
         }
         return;
     };
-    let Ok((camera, projection, camera_transform, exposure, atmosphere)) =
-        scene.main_camera.single()
-    else {
+    let Ok((camera, projection, camera_transform, exposure)) = scene.main_camera.single() else {
         material.reflections.view_count = 0;
         return;
     };
@@ -208,11 +242,6 @@ fn sync_mirrors(
             *camera_projection = Projection::Perspective(mirror_projection);
             *mirror_exposure = exposure.cloned().unwrap_or_default();
         }
-        if let Some(atmosphere) = atmosphere {
-            commands.entity(slot.entity).insert(atmosphere.clone());
-        } else {
-            commands.entity(slot.entity).remove::<AtmosphereSettings>();
-        }
     }
     material.reflections.view_count = count as u32;
     material.reflections.distortion = distortion.max(0.0);
@@ -228,7 +257,7 @@ fn ensure_slots(
         && mirrors
             .slots
             .iter()
-            .all(|slot| images.get(&slot.image).is_some())
+            .all(|slot| images.get(&slot.image).is_some() && images.get(&slot.raw).is_some())
     {
         if mirrors.size != size {
             let extent = Extent3d {
@@ -237,6 +266,10 @@ fn ensure_slots(
                 depth_or_array_layers: 1,
             };
             for slot in &mirrors.slots {
+                images
+                    .get_mut(&slot.raw)
+                    .expect("raw mirror image existence checked above")
+                    .resize(extent);
                 images
                     .get_mut(&slot.image)
                     .expect("mirror image existence checked above")
@@ -249,10 +282,12 @@ fn ensure_slots(
     for slot in mirrors.slots.drain(..) {
         commands.entity(slot.entity).despawn();
         images.remove(slot.image.id());
+        images.remove(slot.raw.id());
     }
     mirrors.size = size;
     for _ in 0..VIEW_LIMIT {
         let image = images.add(reflection_image(size));
+        let raw = images.add(reflection_image(size));
         let entity = commands
             .spawn((
                 Camera3d::default(),
@@ -263,7 +298,8 @@ fn ensure_slots(
                     clear_color: ClearColorConfig::Custom(Color::NONE),
                     ..default()
                 },
-                RenderTarget::Image(image.clone().into()),
+                RenderTarget::Image(raw.clone().into()),
+                crate::resolve::ReflectionOutput(image.clone()),
                 Hdr,
                 DepthPrepass,
                 DeferredPrepass,
@@ -274,7 +310,7 @@ fn ensure_slots(
                 MirrorCamera,
             ))
             .id();
-        mirrors.slots.push(MirrorSlot { entity, image });
+        mirrors.slots.push(MirrorSlot { entity, image, raw });
     }
     true
 }
@@ -335,7 +371,8 @@ fn reflection_image(size: UVec2) -> Image {
         TextureFormat::Rgba16Float,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
-    image.texture_descriptor.usage |= TextureUsages::RENDER_ATTACHMENT;
+    image.texture_descriptor.usage |=
+        TextureUsages::RENDER_ATTACHMENT | TextureUsages::STORAGE_BINDING;
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         mag_filter: ImageFilterMode::Linear,
         min_filter: ImageFilterMode::Linear,
@@ -347,6 +384,154 @@ fn reflection_image(size: UVec2) -> Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mirrors_drop_stale_atmosphere_without_changing_main_view_or_activity() {
+        let mut app = App::new();
+        // No material, main-view projection, or target resources: cleanup must
+        // not depend on any prerequisite that can make sync_mirrors return.
+        app.add_systems(PostUpdate, remove_mirror_atmosphere);
+        let main = app
+            .world_mut()
+            .spawn((Camera::default(), OceanView, AtmosphereSettings::default()))
+            .id();
+        let mirrors: Vec<_> = [true, false]
+            .into_iter()
+            .map(|is_active| {
+                app.world_mut()
+                    .spawn((
+                        Camera {
+                            is_active,
+                            ..default()
+                        },
+                        MirrorCamera,
+                        AuxiliaryWaterView,
+                    ))
+                    .id()
+            })
+            .collect();
+        for _ in 0..2 {
+            for &mirror in &mirrors {
+                app.world_mut()
+                    .entity_mut(mirror)
+                    .insert(AtmosphereSettings::default());
+            }
+            app.update();
+            assert!(app.world().get::<AtmosphereSettings>(main).is_some());
+            for (&mirror, expected_active) in mirrors.iter().zip([true, false]) {
+                assert!(app.world().get::<AtmosphereSettings>(mirror).is_none());
+                assert_eq!(
+                    app.world().get::<Camera>(mirror).unwrap().is_active,
+                    expected_active
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mirrors_inherit_replace_and_remove_main_environment_without_atmosphere() {
+        let mut app = App::new();
+        app.add_systems(
+            PostUpdate,
+            (remove_mirror_atmosphere, sync_mirror_environment).chain(),
+        );
+        let main = app
+            .world_mut()
+            .spawn((Camera::default(), OceanView, AtmosphereSettings::default()))
+            .id();
+        let mirror = app
+            .world_mut()
+            .spawn((Camera::default(), MirrorCamera, AuxiliaryWaterView))
+            .id();
+        let mut images = Assets::<Image>::default();
+        for intensity in [250.0, 750.0] {
+            let environment = EnvironmentMapLight {
+                diffuse_map: images.add(reflection_image(UVec2::ONE)),
+                specular_map: images.add(reflection_image(UVec2::ONE)),
+                intensity,
+                rotation: Quat::from_rotation_y(intensity / 1000.0),
+                affects_lightmapped_mesh_diffuse: intensity < 500.0,
+            };
+            app.world_mut().entity_mut(main).insert(environment.clone());
+            app.world_mut()
+                .entity_mut(mirror)
+                .insert(AtmosphereSettings::default());
+            app.update();
+            for entity in [main, mirror] {
+                let actual = app.world().get::<EnvironmentMapLight>(entity).unwrap();
+                assert_eq!(actual.diffuse_map, environment.diffuse_map);
+                assert_eq!(actual.specular_map, environment.specular_map);
+                assert_eq!(actual.intensity, environment.intensity);
+                assert_eq!(actual.rotation, environment.rotation);
+                assert_eq!(
+                    actual.affects_lightmapped_mesh_diffuse,
+                    environment.affects_lightmapped_mesh_diffuse
+                );
+            }
+            assert!(app.world().get::<AtmosphereSettings>(main).is_some());
+            assert!(app.world().get::<AtmosphereSettings>(mirror).is_none());
+        }
+        app.world_mut()
+            .entity_mut(main)
+            .remove::<EnvironmentMapLight>();
+        app.update();
+        assert!(app.world().get::<EnvironmentMapLight>(mirror).is_none());
+        assert!(app.world().get::<EnvironmentMapLight>(main).is_none());
+        assert!(app.world().get::<AtmosphereSettings>(main).is_some());
+        assert!(app.world().get::<AtmosphereSettings>(mirror).is_none());
+    }
+
+    #[test]
+    fn mirror_slots_keep_raw_targets_separate_from_coverage_outputs() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        world.init_resource::<Assets<Image>>();
+        world.init_resource::<Mirrors>();
+        for size in [UVec2::new(64, 32), UVec2::new(128, 64)] {
+            world
+                .run_system_once(
+                    move |mut commands: Commands,
+                          mut images: ResMut<Assets<Image>>,
+                          mut mirrors: ResMut<Mirrors>| {
+                        ensure_slots(&mut commands, &mut images, &mut mirrors, size);
+                    },
+                )
+                .unwrap();
+            let mirrors = world.resource::<Mirrors>();
+            let images = world.resource::<Assets<Image>>();
+            assert_eq!(mirrors.slots.len(), VIEW_LIMIT);
+            for slot in &mirrors.slots {
+                assert_ne!(slot.raw, slot.image);
+                let RenderTarget::Image(target) = world.get::<RenderTarget>(slot.entity).unwrap()
+                else {
+                    panic!("mirror must render to its raw image");
+                };
+                assert_eq!(target.handle, slot.raw);
+                assert_eq!(
+                    world
+                        .get::<crate::resolve::ReflectionOutput>(slot.entity)
+                        .unwrap()
+                        .0,
+                    slot.image
+                );
+                assert!(world.get::<DepthPrepass>(slot.entity).is_some());
+                assert_eq!(*world.get::<Msaa>(slot.entity).unwrap(), Msaa::Off);
+                for handle in [&slot.raw, &slot.image] {
+                    let descriptor = &images.get(handle).unwrap().texture_descriptor;
+                    assert_eq!(descriptor.size.width, size.x);
+                    assert_eq!(descriptor.size.height, size.y);
+                    assert_eq!(descriptor.format, TextureFormat::Rgba16Float);
+                    assert_eq!(descriptor.mip_level_count, 1);
+                    assert!(descriptor.usage.contains(
+                        TextureUsages::TEXTURE_BINDING
+                            | TextureUsages::RENDER_ATTACHMENT
+                            | TextureUsages::STORAGE_BINDING
+                    ));
+                }
+            }
+        }
+    }
 
     #[test]
     fn mirror_projection_preserves_surface_uv_across_pitch() {
