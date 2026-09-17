@@ -186,16 +186,9 @@ fn write_foam(
     ) else {
         return;
     };
-    // Compute the outcome before borrowing bind groups from `prepared`.
     let pending_steps = frame.uniform.step.x.saturating_sub(prepared.completed_tick);
     let dispatch_count = pending_steps.clamp(1, MAX_CATCH_UP_STEPS);
     let state_is_a = prepared.state_is_a;
-    let new_state_is_a = state_is_a != (dispatch_count % 2 == 1);
-    prepared.state_is_a = new_state_is_a;
-    prepared.completed_tick = prepared
-        .completed_tick
-        .saturating_add(pending_steps.min(MAX_CATCH_UP_STEPS));
-    prepared.state_layout = Some(frame.uniform.target_layout.clone());
 
     let (Some(group_a_to_b), Some(group_b_to_a)) =
         (prepared.groups.get("a_to_b"), prepared.groups.get("b_to_a"))
@@ -253,4 +246,12 @@ fn write_foam(
         },
     });
     pass::run_spans(&mut context, &[pass::Span::new("aqua_foam_compute", steps)]);
+
+    // Commit only after all dispatches and the published-surface copy are
+    // encoded. Unavailable inputs or pipelines must preserve history for retry.
+    prepared.state_is_a = state_is_a;
+    prepared.completed_tick = prepared
+        .completed_tick
+        .saturating_add(pending_steps.min(MAX_CATCH_UP_STEPS));
+    prepared.state_layout = Some(frame.uniform.target_layout.clone());
 }

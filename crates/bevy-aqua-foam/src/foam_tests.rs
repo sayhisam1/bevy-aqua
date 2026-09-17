@@ -225,3 +225,77 @@ fn foam_advection_uniform_follows_the_two_layouts_and_source_parameters() {
     });
     assert_eq!(values, [2.0, 0.6, 6.0, 0.0]);
 }
+
+// These contracts inspect Rust source. They do not execute a GPU dispatch or
+// establish pipeline readiness, command submission, or GPU completion.
+#[test]
+fn foam_history_commits_only_after_readiness_and_surface_copy_encoding() {
+    let write = shader_function(include_str!("render.rs"), "write_foam");
+    let encode = write.find("pass::run_spans(").unwrap();
+    let before_encode = &write[..encode];
+    for guard in [
+        "ifview.into_inner().is_none(){return;}",
+        "if!waves_status.written{return;}",
+        "let(Some(state_a),Some(state_b),Some(surface))=(images.get(&frame.state_a),images.get(&frame.state_b),images.get(&frame.surface))else{return;};",
+        "let(Some(group_a_to_b),Some(group_b_to_a))=(prepared.groups.get(\"a_to_b\"),prepared.groups.get(\"b_to_a\"))else{return;};",
+        "letSome(ready)=prepared.passes.ready_all(&cache,&[(UPDATE,PREVIOUS),(UPDATE,PREVIOUS_ZERO),(UPDATE,CURRENT),])else{return;};",
+    ] {
+        assert!(
+            before_encode.contains(guard),
+            "missing readiness guard: {guard}"
+        );
+    }
+    for field in ["state_is_a", "completed_tick", "state_layout"] {
+        let assignment = format!("prepared.{field}=");
+        assert!(
+            !before_encode.contains(&assignment),
+            "early history commit: {field}"
+        );
+        assert_eq!(
+            write.matches(&assignment).count(),
+            1,
+            "history commit: {field}"
+        );
+    }
+    assert!(before_encode.contains(
+        "letsource=ifstate_is_a{state_a}else{state_b};steps.push(pass::Step::CopyTexture{source:&source.texture,target:&surface.texture,extent:Extent3d{width:RESOLUTION,height:RESOLUTION,depth_or_array_layers:LOD_COUNTasu32,},});"
+    ));
+    assert_eq!(
+        &write[encode..],
+        "pass::run_spans(&mutcontext,&[pass::Span::new(\"aqua_foam_compute\",steps)]);prepared.state_is_a=state_is_a;prepared.completed_tick=prepared.completed_tick.saturating_add(pending_steps.min(MAX_CATCH_UP_STEPS));prepared.state_layout=Some(frame.uniform.target_layout.clone());"
+    );
+}
+
+#[test]
+fn foam_capped_catchup_and_zero_step_reprojection_keep_history_in_sync() {
+    let write = shader_function(include_str!("render.rs"), "write_foam");
+    for contract in [
+        "letpending_steps=frame.uniform.step.x.saturating_sub(prepared.completed_tick);",
+        "letdispatch_count=pending_steps.clamp(1,MAX_CATCH_UP_STEPS);",
+        "letstate_is_a=prepared.state_is_a;",
+        "letmutstate_is_a=state_is_a;",
+        "forstepin0..dispatch_count{letgroup=ifstate_is_a{group_a_to_b}else{group_b_to_a};letupdate=ifpending_steps==0{ready.get(UPDATE,PREVIOUS_ZERO)}elseifstep==0{ready.get(UPDATE,PREVIOUS)}else{ready.get(UPDATE,CURRENT)};steps.push(pass::Step::Dispatch{pipeline:update,group,workgroups,});state_is_a=!state_is_a;}",
+        "prepared.completed_tick=prepared.completed_tick.saturating_add(pending_steps.min(MAX_CATCH_UP_STEPS));",
+        "prepared.state_is_a=state_is_a;",
+    ] {
+        assert!(
+            write.contains(contract),
+            "missing dispatch contract: {contract}"
+        );
+    }
+    // Even with no simulation tick pending, one reprojection dispatch swaps
+    // history. A capped catch-up advances only the ticks actually dispatched.
+    for pending in [0, 1, MAX_CATCH_UP_STEPS, MAX_CATCH_UP_STEPS + 1] {
+        let dispatches = pending.clamp(1, MAX_CATCH_UP_STEPS);
+        let advanced = pending.min(MAX_CATCH_UP_STEPS);
+        assert_eq!(dispatches, advanced.max(1));
+        for initial in [false, true] {
+            let final_state = (0..dispatches).fold(initial, |state, _| !state);
+            assert_eq!(final_state, initial ^ (dispatches % 2 != 0));
+            if pending == 0 {
+                assert_eq!(advanced, 0);
+                assert_eq!(final_state, !initial);
+            }
+        }
+    }
+}
