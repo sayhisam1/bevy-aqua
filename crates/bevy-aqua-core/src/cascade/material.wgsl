@@ -23,7 +23,7 @@
 #import aqua::waves::displace::{FFT_JONSWAP_SLOPE_VARIANCE, GERSTNER_SLOPE_VARIANCE, WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, crest_sss, detail_normal_sample, far_displacement, far_normal_cross, sample_fft_normal_cross}
 
 #import aqua::foam::contract::FOAM_PATTERN_RESOLUTION
-#import aqua::foam::shade::{CREST_FOAM_NORMAL_STRENGTH, CREST_FOAM_SPECULAR_BOOST, INV_PI, CREST_FOAM_SPECULAR_FALLOFF, CREST_FOAM_WHITE_COLOR, foam_bubble_colour, local_foam_light, river_streak_density, sample_foam_density, surface_foam_mask}
+#import aqua::foam::shade::{CREST_FOAM_NORMAL_STRENGTH, CREST_FOAM_SPECULAR_BOOST, INV_PI, CREST_FOAM_SPECULAR_FALLOFF, CREST_FOAM_WHITE_COLOR, foam_bubble_colour, local_foam_light, river_streak_coverage, sample_foam_density, surface_foam_mask}
 
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
 #import bevy_aqua_core::deform::{deform_current}
@@ -80,7 +80,7 @@ fn prepare_surface_foam(
     }
     // River bank streaks are independent of the persistent foam buffer:
     // they exist wherever fast water runs close to a bank.
-    let streak = river_streak_density(
+    let streak = river_streak_coverage(
         invocation_river_state(),
         in.world_position.xz,
         surface_lod,
@@ -88,18 +88,15 @@ fn prepare_surface_foam(
     );
     if streak > 0.0 {
         white_foam_density += streak;
-        white_foam += surface_foam_mask(
-            advected_world(in.undisplaced_xz),
-            surface_lod,
-            in.sample_data.y,
-            streak,
-            vec2(0.0),
-        );
+        // Streak is already patterned coverage. Re-thresholding it as a
+        // density fills the channel with white; combine the two masks once.
+        white_foam = 1.0 - (1.0 - white_foam) * (1.0 - streak);
     }
     return FoamState(
+        foam_density + streak,
         visible_foam_density,
         white_foam_density,
-        white_foam,
+        clamp(white_foam, 0.0, 1.0),
         shared_depth_path,
         has_shared_depth_path,
     );
@@ -231,10 +228,12 @@ fn shade_water_body(
     let view_alignment = clamp(dot(near.lighting_normal, to_view), 0.0, 1.0);
     let fresnel = godot_fresnel(view_alignment);
     let foam_distance_fade = exp(-near.lighting_distance * 0.0075);
+    // Preserve the persistent-foam roughness response and add bank coverage
+    // before the single distance fade, independently of shoreline attenuation.
     let foam_factor = smoothstep(
         0.0,
         1.0,
-        medium.foam_density * 0.75,
+        foam.roughness_density * 0.75,
     ) * foam_distance_fade;
     let foam_roughness = (1.0 - fresnel) * foam_factor;
     let environment_roughness = clamp(
@@ -342,7 +341,8 @@ fn shade_local_lights(
     }
     let view_vertical = abs(to_view.y);
     let local_grazing = max(1.0 - view_vertical * view_vertical, 0.0);
-    let foam_active = foam.visible_density > 0.0;
+    // Authored bank streaks can exist without persistent whitecaps.
+    let foam_active = foam.white_density > 0.0;
     var foam_normal = near.normal;
     if foam_active {
         let pixel_z = max(-primary.view_z, 0.0);
@@ -460,8 +460,8 @@ fn compose_water(
         return vec4(reflected_radiance * reflection_weight, 1.0);
     }
     var water = mix(local.body, reflected_radiance, reflection_weight);
-    if foam.visible_density > 0.0 {
-        let mask = CREST_FOAM_WHITE_COLOR.a * foam.white_mask;
+    if foam.white_mask > 0.0 {
+        let mask = clamp(CREST_FOAM_WHITE_COLOR.a * foam.white_mask, 0.0, 1.0);
 
         // Crest `OceanFoam.hlsl`: shipped 3D foam lighting. Bevy's scene
         // diffuse irradiance replaces Unity SH L0; no constant ambient term
