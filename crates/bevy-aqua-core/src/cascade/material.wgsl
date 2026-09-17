@@ -18,7 +18,7 @@
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
 
-#import aqua::cascade::{CREST_SSS_RANGE, CREST_SSS_UNCOMPRESSED, DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_FAR_TIER, DEBUG_MODE_FOAM, DEBUG_MODE_LIGHT_RADIANCE, DEBUG_MODE_REFLECTION, DEBUG_MODE_REFLECTION_FRACTION, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, DEBUG_MODE_WAVE_HEIGHT, LUMINANCE_EPSILON, LocalLightSample, MIN_NORMAL_Y, SAFE_LENGTH_SQUARED, advected_world, begin_invocation, capillary_resolved_weight, cascade_layout, effective_flow, far_tier_weight, field_params, godot_fresnel, invocation_extinction, invocation_ripple, invocation_river_state, invocation_scatter_scale, lod_count, owning_body, sample_displacement, sample_field_flow, sample_field_level, sample_planar_reflection, set_body_optics, set_effective_flow, set_effective_time, set_fragment_river, set_river_ripple, set_xz_footprint, snap_and_transition, surface}
+#import aqua::cascade::{CREST_SSS_RANGE, CREST_SSS_UNCOMPRESSED, DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_FAR_TIER, DEBUG_MODE_FOAM, DEBUG_MODE_LIGHT_RADIANCE, DEBUG_MODE_REFLECTION, DEBUG_MODE_REFLECTION_FRACTION, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, DEBUG_MODE_WAVE_HEIGHT, LUMINANCE_EPSILON, LocalLightSample, MIN_NORMAL_Y, SAFE_LENGTH_SQUARED, advected_world, begin_invocation, capillary_resolved_weight, cascade_layout, effective_flow, far_tier_weight, field_params, godot_fresnel, invocation_extinction, invocation_ripple, invocation_river_state, invocation_scatter_scale, lod_count, owning_body, sample_displacement, sample_field_flow, sample_field_level, sample_planar_reflection, set_body_optics, set_effective_flow, set_effective_time, set_fragment_river, set_river_ripple, set_xz_footprint, snap_and_transition, invocation_sun_roughness, surface}
 
 #import aqua::waves::displace::{FFT_JONSWAP_SLOPE_VARIANCE, GERSTNER_SLOPE_VARIANCE, WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, crest_sss, detail_normal_sample, far_displacement, far_normal_cross, sample_fft_normal_cross}
 
@@ -146,7 +146,7 @@ fn directional_scatter(
         let view_vertical = abs(to_view.y);
         let grazing = max(1.0 - view_vertical * view_vertical, 0.0);
         let dot_nv = max(dot(near.lighting_normal, to_view), 2e-5);
-        let sss_light_mask = smith_masking_shadowing(dot_nv, surface.sun.y);
+        let sss_light_mask = smith_masking_shadowing(dot_nv, invocation_sun_roughness());
         let sss_near = 0.5 * pow(dot_nv, 2.0);
         let sss_height = max(0.0, in.sample_data.z + 2.5)
             * pow(max(dot(light_direction, -to_view), 0.0), 4.0)
@@ -246,11 +246,11 @@ fn shade_water_body(
     // Godot uses a 0.4 alpha floor. Aqua's unresolved slope variance adds
     // in quadrature so every direct emitter softens consistently with distance.
     // Skip this emitter-only work when the clustered fragment has no lights.
-    var sun_roughness = surface.sun.y;
+    var sun_roughness = invocation_sun_roughness();
     if lights.n_directional_lights > 0u || has_local_lights {
         let foam_surface_roughness = clamp(
-            surface.sun.y + foam_roughness,
-            surface.sun.y,
+            invocation_sun_roughness() + foam_roughness,
+            invocation_sun_roughness(),
             1.0,
         );
         sun_roughness = min(sqrt(
@@ -451,7 +451,7 @@ fn compose_water(
     // Godot's foam roughness therefore damps both environment and sun glints.
     let reflected_radiance = local.reflected * (1.0 - body_lighting.foam_roughness);
 
-    // GodotOceanWaves roughness-damped Fresnel; Crest owns final composition.
+    // Source-independent dielectric Fresnel; Crest owns final composition.
     let reflection_weight = clamp(body_lighting.fresnel * surface.fresnel.z, 0.0, 1.0);
     if mode == DEBUG_MODE_REFLECTION_FRACTION {
         return vec4(vec3(reflection_weight), 1.0);

@@ -111,7 +111,7 @@ data; set them before the plugin starts.
 clear-fresh presets are also provided. `far_tier_start` and `far_tier_end`
 bound the reduced-cost shading transition in metres. Far shading keeps sun
 and reflections while omitting depth, foam, and sampled subsurface detail.
-`reflections` selects the default planar mirror views or the byte-compatible cubemap-only path. Mark terrain or a
+`reflections` selects the default planar mirror views or the cubemap-only path. Both use the same dielectric Fresnel response. Mark terrain or a
 scene root with `ReflectedInWater` to include it and its descendants in planar
 views. `caustics` controls the default procedural shallow-bed lighting; set it
 to `None` to skip both texture samples. Hosts can update
@@ -211,6 +211,14 @@ CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-server-runner \
 ```
 
 See [`examples/README.md`](examples/README.md) for the full command list.
+
+## Lighting appearance (unreleased)
+
+Cubemap-only oceans now use the same dielectric Fresnel response as planar
+reflections. Grazing-angle reflections can therefore be stronger than before.
+`WaterOptics::sun_roughness` controls direct-light highlight width, not the
+Fresnel curve; negative values still inherit the ocean setting. Existing scenes
+may need an appearance review, but public fields and GPU layouts are unchanged.
 
 ## Debug-mode migration (unreleased)
 

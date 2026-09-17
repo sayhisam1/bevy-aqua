@@ -28,3 +28,6 @@ mod refraction_tests;
 
 #[cfg(test)]
 mod directional_exposure_tests;
+
+#[cfg(test)]
+mod fresnel_tests;

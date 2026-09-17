@@ -13,7 +13,7 @@
     mesh_view_bindings::{light_probes, lights, view},
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
-#import aqua::cascade::{LUMINANCE_EPSILON, LocalLightSample, SAFE_LENGTH_SQUARED, surface}
+#import aqua::cascade::{LUMINANCE_EPSILON, LocalLightSample, SAFE_LENGTH_SQUARED, invocation_sun_roughness, surface}
 #import bevy_aqua_core::material::{PrimaryLightState, SurfaceVertexOutput}
 
 const PI: f32 = 3.14159265359;
@@ -137,7 +137,7 @@ fn local_light_contribution(
             max(dot(sample.direction, -to_view), 0.0),
             surface.sss.z,
         );
-        let light_mask = smith_masking_shadowing(dot_nv, surface.sun.y);
+        let light_mask = smith_masking_shadowing(dot_nv, invocation_sun_roughness());
         let sss_near = 0.5 * pow(dot_nv, 2.0);
         let sss_height = max(0.0, wave_height + 2.5)
             * pow(max(dot(sample.direction, -to_view), 0.0), 4.0)

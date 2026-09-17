@@ -210,7 +210,7 @@ pub struct BodyParams {
     /// profile; w: optics enable flag. Fresh-water bodies author low
     /// extinction so the bed shows through.
     optics_a: Vec4,
-    /// x: scatter-endpoint scale (deep-pool darkness); yzw reserved.
+    /// x: scatter-endpoint scale; y: direct-light roughness; zw reserved.
     optics_b: Vec4,
 }
 
@@ -236,17 +236,14 @@ impl BodyParams {
         has_flow: bool,
         optics: Option<BodyOptics>,
     ) -> Self {
-        // Body Fresnel is plain Schlick (no roughness damping); the ocean
-        // preset keeps its damped curve.
-        let (extinction, scale, roughness, schlick, enabled) = match optics {
+        let (extinction, scale, roughness, enabled) = match optics {
             Some(optics) => (
                 optics.extinction,
                 optics.scatter_scale,
                 optics.sun_roughness,
                 1.0,
-                1.0,
             ),
-            None => (Vec3::ZERO, 1.0, -1.0, 0.0, 0.0),
+            None => (Vec3::ZERO, 1.0, -1.0, 0.0),
         };
         Self {
             flags: Vec4::new(1.0, if has_flow { 1.0 } else { 0.0 }, 0.0, 0.0),
@@ -254,7 +251,7 @@ impl BodyParams {
             aabb_min: Vec4::new(aabb_min.x, aabb_min.y, 0.0, 0.0),
             aabb_size: Vec4::new(aabb_size.x, aabb_size.y, 0.0, 0.0),
             optics_a: Vec4::new(extinction.x, extinction.y, extinction.z, enabled),
-            optics_b: Vec4::new(scale, roughness, schlick, 0.0),
+            optics_b: Vec4::new(scale, roughness, 0.0, 0.0),
         }
     }
 }
@@ -268,8 +265,7 @@ pub struct BodyOptics {
     pub extinction: Vec3,
     /// Multiplier on the volume-scatter endpoint.
     pub scatter_scale: f32,
-    /// Surface roughness driving the Fresnel response; negative inherits
-    /// the ocean value.
+    /// Direct-light lobe roughness; negative inherits the ocean value.
     pub sun_roughness: f32,
 }
 
