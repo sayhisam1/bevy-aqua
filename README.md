@@ -231,7 +231,9 @@ Cubemap-only oceans now use the same dielectric Fresnel response as planar
 reflections. Grazing-angle reflections can therefore be stronger than before.
 `WaterOptics::sun_roughness` controls direct-light highlight width, not the
 Fresnel curve; negative values still inherit the ocean setting. Existing scenes
-may need an appearance review, but public fields and GPU layouts are unchanged.
+may need an appearance review. That Fresnel change does not alter public fields
+or GPU layouts; the separate wave-spectrum and roughness changes do. See
+[MIGRATION.md](MIGRATION.md) for `BinSpec` and surface-uniform updates.
 
 ## Debug-mode migration (unreleased)
 

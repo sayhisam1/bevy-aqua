@@ -9,7 +9,7 @@
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
 #import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, invocation_extinction, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, surface}
-#import aqua::waves::displace::{FFT_JONSWAP_SLOPE_VARIANCE, GERSTNER_SLOPE_VARIANCE, WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, detail_normal_sample}
+#import aqua::waves::displace::{WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, detail_normal_sample}
 #import aqua::foam::shade::{sample_foam_density}
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
 #import aqua::light::incident::{GODOT_NORMAL_FADE_RATE, GODOT_NORMAL_MINIMUM_STRENGTH, GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, safe_normalize, sample_diffuse_environment, sample_environment, smith_masking_shadowing, strongest_incident_directional_light}
@@ -35,20 +35,26 @@ fn unresolved_wave_roughness(
     let unresolved_wavelength = 2.0 * footprint;
     var unresolved_variance = 0.0;
     var resolved_variance = 0.0;
-    for (var band = 0u; band < 5u; band++) {
-        let maximum_wavelength = cascade_layout.cascades[band].max_wavelength;
-        let minimum_wavelength = 0.5 * maximum_wavelength;
+    let spectral = surface.reflection.x > 0.5;
+    let band_count = select(5u, 8u, spectral);
+    for (var band = 0u; band < band_count; band++) {
+        let cascade = cascade_layout.cascades[min(band, 4u)];
+        var maximum_wavelength = cascade.max_wavelength;
+        var minimum_wavelength = 0.5 * maximum_wavelength;
+        if spectral && band >= 4u {
+            let upper = cascade.texel_width * cascade.texture_res / 4.0;
+            let octaves = log2(upper / minimum_wavelength);
+            maximum_wavelength = minimum_wavelength
+                * exp2(octaves * f32(band - 3u) / 4.0);
+            minimum_wavelength *= exp2(octaves * f32(band - 4u) / 4.0);
+        }
         let unresolved_fraction = clamp(
-            log2(max(unresolved_wavelength / minimum_wavelength, 1.0)),
+            log2(max(unresolved_wavelength / minimum_wavelength, 1.0))
+                / log2(maximum_wavelength / minimum_wavelength),
             0.0,
             1.0,
         );
-        let fft_variance = FFT_JONSWAP_SLOPE_VARIANCE[band];
-        let band_variance = mix(
-            GERSTNER_SLOPE_VARIANCE[band],
-            fft_variance,
-            surface.reflection.x,
-        );
+        let band_variance = surface.wave_slope_variance[band / 4u][band % 4u];
         unresolved_variance += unresolved_fraction * band_variance;
         resolved_variance += (1.0 - unresolved_fraction) * band_variance;
     }

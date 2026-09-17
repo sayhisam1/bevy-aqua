@@ -315,6 +315,11 @@ pub struct SurfaceParams {
     pub far_tier: Vec4,
     /// Strength, metres per cell, metres per second, and maximum depth in metres.
     pub caustics: Vec4,
+    /// Exclusive startup-wave slope energy, fine to coarse. Zero without a producer.
+    /// Bands 0..3 occupy element 0. Analytic band 4 occupies element 1.x.
+    /// Spectral band 4 is split into four equal log-wavelength bins in element 1.
+    /// The core octave metadata stays unchanged; the spectral upper bound is period/4.
+    pub wave_slope_variance: [Vec4; 2],
 }
 
 impl SurfaceParams {
@@ -363,6 +368,7 @@ impl Default for SurfaceParams {
             advection: Vec4::ZERO,
             far_tier: Vec4::new(320.0, 512.0, 0.0, 0.0),
             caustics: Vec4::ZERO,
+            wave_slope_variance: [Vec4::ZERO; 2],
         }
     }
 }
