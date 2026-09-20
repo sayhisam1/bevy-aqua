@@ -334,15 +334,16 @@ pub struct SurfaceParams {
     pub medium_scatter: Vec4,
     /// SSS pedestal, strength, and range; w reserved.
     pub sss: Vec4,
-    /// Detail normals: scale, strength, and overall strength; w reserved.
+    /// Detail normals: scale, strength, overall strength; w: shallow-wave attenuation.
     pub detail: Vec4,
     /// Capillary ripples: frequency ratio, slope strength, resolved-fade
     /// start/end in metres.
     pub capillary: Vec4,
     /// Foam scale, feather, and lighting strength; w reserved.
     pub foam: Vec4,
-    /// xy: world-space current in m/s; zw reserved. The shader advects wave
-    /// sampling by `flow * globals.time`.
+    /// xy: world-space current in m/s; zw: unit dominant wave-travel heading.
+    /// The shader advects wave sampling by `flow * globals.time` and aligns
+    /// decorative surface motion with the authored wave direction.
     pub advection: Vec4,
     /// x: far-tier transition start in metres, y: end; zw reserved.
     pub far_tier: Vec4,
@@ -594,15 +595,17 @@ pub fn update(
             0.0
         };
         let detail = settings.detail_strength.clamp(0.0, 2.0);
-        material.surface.reflection.y = (detail * 12.5).clamp(0.0, 2.0);
+        material.surface.reflection.y = 1.0;
         material.surface.sun.z = if settings.atmospheric_sunlight {
             1.0
         } else {
             0.0
         };
         material.surface.detail.y = detail;
+        material.surface.detail.w = waves.shallow_water_attenuation.clamp(0.0, 1.0);
         material.surface.capillary.y = detail.min(0.5);
-        material.surface.advection = Vec4::new(waves.flow.x, waves.flow.y, 0.0, 0.0);
+        let heading = Vec2::from_angle(waves.wind_direction_degrees.to_radians());
+        material.surface.advection = Vec4::new(waves.flow.x, waves.flow.y, heading.x, heading.y);
         let far_start = settings.far_tier_start.max(0.0);
         let far_end = settings.far_tier_end.max(far_start + 1.0);
         material.surface.far_tier = Vec4::new(far_start, far_end, 0.0, 0.0);
@@ -654,9 +657,17 @@ pub fn make_texture() -> Image {
     make_array_texture(LOD_COUNT as u32)
 }
 
-/// Creates the FFT surface normal-cross array texture.
+/// Creates the legacy normal-cross plus exclusive derivative/moment array texture.
 pub fn make_fft_surface_texture() -> Image {
-    make_array_texture(LOD_COUNT as u32)
+    // Five legacy geometry-normal layers, then eight exclusive spectral
+    // derivative pairs (XYZ derivative, W vertical-slope second moment).
+    // Four bounded FD prediction/curvature layers follow (layers21..24).
+    // No new material binding; 25 layers is below WebGPU's 256-layer minimum.
+    let mut image = make_array_texture(LOD_COUNT as u32 + 20);
+    // Written by surface resolve, then densely box-filtered for distant shading.
+    image.texture_descriptor.mip_level_count = RESOLUTION.ilog2() + 1;
+    image.data = None;
+    image
 }
 
 fn make_array_texture(layers: u32) -> Image {

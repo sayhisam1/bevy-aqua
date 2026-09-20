@@ -112,7 +112,9 @@ pub fn spectral_bin(
     // The spectrum is authored along +X; rotating the wave vector evaluates
     // the same directional distribution around the requested wind. Length and
     // wavelength are rotation-invariant, so normalization is unaffected.
-    let k = glam::Vec2::from_angle(authoring.wind_radians)
+    // Rotate the sampled bin into the wind-aligned frame. A spectrum authored
+    // at +theta must place its dominant travelling q bins at +theta.
+    let k = glam::Vec2::from_angle(-authoring.wind_radians)
         .rotate(delta_k * signed_frequency(index, resolution).as_vec2());
     let k_length = k.length();
     let wavelength = TAU / k_length.max(f32::MIN_POSITIVE);

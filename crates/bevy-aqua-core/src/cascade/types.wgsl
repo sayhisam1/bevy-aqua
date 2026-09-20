@@ -38,6 +38,7 @@ struct NearSurface {
     // Amplitude retained by the far-tier detail fade; geometric slopes stay unchanged.
     near_detail_weight: f32,
     filtered_detail_variance: f32,
+    filtered_capillary_variance: f32,
 }
 
 struct PrimaryLightState {

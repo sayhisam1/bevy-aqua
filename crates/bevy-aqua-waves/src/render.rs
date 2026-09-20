@@ -34,6 +34,18 @@ const EVOLVE: &str = "FFT evolve";
 const TRANSFORM: &str = "FFT transform";
 const RESOLVE: &str = "FFT resolve";
 const SURFACE: &str = "FFT surface resolve";
+const SURFACE_RESIDUAL: &str = "FFT surface residual";
+const SURFACE_FILTER: &str = "FFT surface filter";
+const SURFACE_MIPS: [&str; 8] = [
+    "surface_mip_1",
+    "surface_mip_2",
+    "surface_mip_3",
+    "surface_mip_4",
+    "surface_mip_5",
+    "surface_mip_6",
+    "surface_mip_7",
+    "surface_mip_8",
+];
 
 const COMBINE_ENTRIES: &[&str] = &[
     "combine_0",
@@ -162,9 +174,42 @@ fn pass_table(stockham: &StockhamShader) -> Vec<pass::PassSpec> {
             ),
         },
         pass::PassSpec {
+            key: SURFACE_FILTER,
+            shader: pass::ShaderSource::Path("embedded://bevy_aqua_waves/fft_surface_filter.wgsl"),
+            entry_points: &["filter_surface"],
+            shader_defs: &[],
+            wgsl_entry: None,
+            layout: BindGroupLayoutDescriptor::new(
+                SURFACE_FILTER,
+                &BindGroupLayoutEntries::sequential(compute, (float_array(), storage_rgba16())),
+            ),
+        },
+        pass::PassSpec {
+            key: SURFACE_RESIDUAL,
+            shader: pass::ShaderSource::Path(
+                "embedded://bevy_aqua_waves/fft_surface_residual.wgsl",
+            ),
+            entry_points: &["resolve_residual"],
+            shader_defs: &[],
+            wgsl_entry: None,
+            layout: BindGroupLayoutDescriptor::new(
+                SURFACE_RESIDUAL,
+                &BindGroupLayoutEntries::sequential(
+                    compute,
+                    (
+                        texture_2d_array(TextureSampleType::Float { filterable: true }),
+                        sampler(SamplerBindingType::Filtering),
+                        storage_rgba16(),
+                        uniform_buffer::<fft::Uniform>(false),
+                        texture_2d(TextureSampleType::Float { filterable: false }),
+                    ),
+                ),
+            ),
+        },
+        pass::PassSpec {
             key: SURFACE,
             shader: pass::ShaderSource::Path(FFT_SURFACE_SHADER_PATH),
-            entry_points: &["resolve_surface"],
+            entry_points: &["resolve_surface", "resolve_analytic"],
             shader_defs: &[],
             wgsl_entry: None,
             layout: BindGroupLayoutDescriptor::new(
@@ -175,6 +220,8 @@ fn pass_table(stockham: &StockhamShader) -> Vec<pass::PassSpec> {
                         float_array(),
                         storage_rgba16(),
                         uniform_buffer::<fft::Uniform>(false),
+                        float_array(),
+                        float_array(),
                     ),
                 ),
             ),
@@ -403,11 +450,63 @@ fn prepare_bind_groups(
             fft_uniform
         ))
     );
+    let mip_view = |level| {
+        surface.texture.create_view(&TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::D2Array),
+            base_mip_level: level,
+            mip_level_count: Some(1),
+            ..default()
+        })
+    };
+    let base_surface = mip_view(0);
     group!(
         "surface",
         SURFACE,
-        &BindGroupEntries::sequential((&output.texture_view, &surface.texture_view, fft_uniform))
+        &BindGroupEntries::sequential((
+            &output.texture_view,
+            &base_surface,
+            fft_uniform,
+            &state_0.texture_view,
+            &state_1.texture_view
+        ))
     );
+    // Disjoint layer ranges: WebGPU must not see sampled/storage overlap.
+    let residual_source = surface.texture.create_view(&TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::D2Array),
+        base_mip_level: 0,
+        mip_level_count: Some(1),
+        base_array_layer: 0,
+        array_layer_count: Some(21),
+        ..default()
+    });
+    let residual_target = surface.texture.create_view(&TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::D2Array),
+        base_mip_level: 0,
+        mip_level_count: Some(1),
+        base_array_layer: 21,
+        array_layer_count: Some(4),
+        ..default()
+    });
+    group!(
+        "surface_residual",
+        SURFACE_RESIDUAL,
+        &BindGroupEntries::sequential((
+            &residual_source,
+            &surface.sampler,
+            &residual_target,
+            fft_uniform,
+            &bed.texture_view
+        ))
+    );
+    for (index, key) in SURFACE_MIPS.iter().enumerate() {
+        let source = mip_view(index as u32);
+        let target = mip_view(index as u32 + 1);
+        group!(
+            key,
+            SURFACE_FILTER,
+            &BindGroupEntries::sequential((&source, &target))
+        );
+    }
 }
 
 fn cascade_grid(layers: u32) -> [u32; 3] {
@@ -484,7 +583,12 @@ fn fft_spans<'a>(
         (RESOLVE, "resolve"),
         (GATHER, "gather"),
         (SURFACE, "resolve_surface"),
+        (SURFACE_FILTER, "filter_surface"),
     ];
+    if frame.fft_bins > 1 {
+        requested.push((SURFACE_RESIDUAL, "resolve_residual"));
+        requested.push((SURFACE, "resolve_analytic"));
+    }
     requested.extend(COMBINE_ENTRIES.iter().map(|entry| (COMBINE, *entry)));
     let ready = prepared.passes.ready_all(cache, &requested)?;
     let groups = &prepared.groups;
@@ -535,7 +639,9 @@ fn fft_spans<'a>(
         workgroups: cascade_grid(LOD_COUNT as u32),
     });
 
-    Some(vec![
+    let surface_layers =
+        LOD_COUNT as u32 + 2 * (4 + frame.fft_bins) + if frame.fft_bins > 1 { 4 } else { 0 };
+    let mut spans = vec![
         single(
             "aqua_fft_evolve",
             EVOLVE,
@@ -558,9 +664,40 @@ fn fft_spans<'a>(
             SURFACE,
             "resolve_surface",
             "surface",
-            cascade_grid(LOD_COUNT as u32),
+            cascade_grid(LOD_COUNT as u32 + 4 + frame.fft_bins),
         )?,
-    ])
+    ];
+    if frame.fft_bins > 1 {
+        spans.push(single(
+            "aqua_surface_shallow_prediction",
+            SURFACE_RESIDUAL,
+            "resolve_residual",
+            "surface_residual",
+            cascade_grid(4),
+        )?);
+        spans.push(single(
+            "aqua_surface_analytic_overwrite",
+            SURFACE,
+            "resolve_analytic",
+            "surface",
+            cascade_grid(8),
+        )?);
+    }
+    for (index, key) in SURFACE_MIPS.iter().enumerate() {
+        let size = lod::RESOLUTION >> (index + 1);
+        spans.push(single(
+            key,
+            SURFACE_FILTER,
+            "filter_surface",
+            key,
+            [
+                size.div_ceil(WORKGROUP_SIZE),
+                size.div_ceil(WORKGROUP_SIZE),
+                surface_layers,
+            ],
+        )?);
+    }
+    Some(spans)
 }
 
 fn write_anim_waves(

@@ -5,7 +5,7 @@
 
 #import bevy_pbr::mesh_view_bindings::globals
 
-#import aqua::cascade::{CascadeParams, LUMINANCE_EPSILON, LocalLightSample, MIN_SAMPLE_WEIGHT, RiverState, advected_world, capillary_resolved_weight, cascade_layout, foam_data, foam_pattern, foam_pattern_sampler, foam_sampler, lod_count, screen_texture_lod, surface, world_to_uv}
+#import aqua::cascade::{CascadeParams, LUMINANCE_EPSILON, LocalLightSample, MIN_SAMPLE_WEIGHT, RiverState, advected_world, cascade_layout, foam_data, foam_pattern, foam_pattern_sampler, foam_sampler, lod_count, screen_texture_lod, surface, world_to_uv}
 #import aqua::foam::contract::{FOAM_PATTERN_RESOLUTION, FOAM_TEXTURE_RESOLUTION}
 const INV_PI: f32 = 0.31830988618;
 const CREST_FOAM_WHITE_COLOR: vec4<f32> = vec4(
@@ -24,8 +24,7 @@ const FINE_FOAM_ROTATION: mat2x2<f32> = mat2x2(
     vec2(0.798636, 0.601815),
     vec2(-0.601815, 0.798636),
 );
-const FINE_FOAM_SCROLL_DIRECTION: vec2<f32> = vec2(-0.819152, 0.573576);
-const FINE_FOAM_SCALE: f32 = 0.55;
+const FINE_FOAM_SCALE: f32 = 0.61803399;
 // Linear-light mean of the Unity-style 512px Foam2 import.
 const CREST_FOAM_LINEAR_MEAN: f32 = 0.426906;
 
@@ -142,31 +141,18 @@ fn surface_foam_mask(
     density: f32,
     sample_offset: vec2<f32>,
 ) -> f32 {
-    let cascade = cascade_layout.cascades[lod];
+    let cascade = cascade_layout.cascades[0u];
     let texture_scale = surface.foam.x * cascade.scale / 25.0;
-    // The breakup pattern rides the current so foam streaks do not slide
-    // against the water carrying them; callers hand over the advected
-    // position so this module never touches per-invocation state.
-    let offset = vec2(globals.time / 10.0) + sample_offset;
+    let offset = -surface.advection.zw * globals.time / 10.0 + sample_offset;
     let pattern_xz = advected_xz;
     let texture_width = textureDimensions(foam_pattern).x;
-    let near_lod = screen_texture_lod(texture_scale / 1.25, texture_width);
-    let near = textureSampleLevel(
-        foam_pattern,
-        foam_pattern_sampler,
-        (1.25 * pattern_xz + offset) / texture_scale,
-        near_lod,
+    let pattern_lod = screen_texture_lod(texture_scale / 1.25, texture_width);
+    var pattern = textureSampleLevel(
+        foam_pattern, foam_pattern_sampler,
+        (1.25 * pattern_xz + offset) / texture_scale, pattern_lod,
     ).r;
-    let far_scale = 2.0 * texture_scale;
-    let far_lod = screen_texture_lod(far_scale / 1.25, texture_width);
-    let far = textureSampleLevel(
-        foam_pattern,
-        foam_pattern_sampler,
-        (1.25 * pattern_xz + offset) / far_scale,
-        far_lod,
-    ).r;
-    var pattern = mix(near, far, alpha);
-    let fine_scroll = FINE_FOAM_SCROLL_DIRECTION * globals.time / 17.0;
+    let fine_scroll = -FINE_FOAM_ROTATION
+        * surface.advection.zw * globals.time / 13.0;
     let fine_coordinates =
         FINE_FOAM_ROTATION * (1.25 * pattern_xz + sample_offset) + fine_scroll;
     let fine_scale = FINE_FOAM_SCALE * texture_scale;
@@ -177,13 +163,11 @@ fn surface_foam_mask(
         fine_coordinates / fine_scale,
         fine_lod,
     ).r;
-    // Mean-one near-field modulation hides the 512-grid footprint without
-    // changing the far-field pattern.
+    // Keep both decorrelated fields world-stationary. Texture filtering takes
+    // the fine field to its mean; a fixed30–50m fade would expose a repeat grid
+    // and change coverage as the camera crossed it.
     let fine_modulation = 1.0 + 0.65 * (fine - CREST_FOAM_LINEAR_MEAN);
-    let fine_weight = capillary_resolved_weight(advected_xz);
-    let modulated_pattern = pattern * mix(1.0, fine_modulation, fine_weight);
-
-    pattern = select(pattern, modulated_pattern, fine_weight > 0.0);
+    pattern *= fine_modulation;
     let black_point = clamp(1.0 - density, 0.0, 1.0);
     return smoothstep(black_point, black_point + surface.foam.y, pattern);
 }
@@ -229,28 +213,19 @@ fn foam_bubble_colour(
     to_view: vec3<f32>,
     ambient_radiance: vec3<f32>,
 ) -> vec3<f32> {
-    let wind_direction = vec2(0.866, 0.5);
-    let bubble_world = mix(undisplaced_xz, displaced_xz, 0.7)
-        + 0.5 * globals.time * wind_direction;
+    let bubble_world = advected_world(mix(undisplaced_xz, displaced_xz, 0.7))
+        - 0.5 * globals.time * surface.advection.zw;
     let bubble_uv = bubble_world / surface.foam.x
         + 0.125 * surface_normal.xz;
     let parallax = -CREST_FOAM_BUBBLE_PARALLAX * to_view.xz
         / max(dot(surface_normal, to_view), LUMINANCE_EPSILON);
-    let smaller = cascade_layout.cascades[lod];
-    let bigger = cascade_layout.cascades[min(lod + 1u, lod_count())];
-    let smaller_sample = textureSampleLevel(
-        foam_pattern,
-        foam_pattern_sampler,
-        (0.74 * bubble_uv + parallax) / (smaller.scale / 25.0),
-        3.0,
+    let bubble_scale = cascade_layout.cascades[0u].scale / 25.0;
+    let bubble_lod = screen_texture_lod(surface.foam.x * bubble_scale / 0.74,
+        textureDimensions(foam_pattern).x);
+    let bubble_texture = textureSampleLevel(
+        foam_pattern, foam_pattern_sampler,
+        (0.74 * bubble_uv + parallax) / bubble_scale, max(bubble_lod, 3.0),
     ).r;
-    let bigger_sample = textureSampleLevel(
-        foam_pattern,
-        foam_pattern_sampler,
-        (0.74 * bubble_uv + parallax) / (bigger.scale / 25.0),
-        3.0,
-    ).r;
-    let bubble_texture = mix(smaller_sample, bigger_sample, alpha);
     let coverage = clamp(density * CREST_FOAM_BUBBLE_COVERAGE, 0.0, 1.0);
     return bubble_texture * CREST_FOAM_BUBBLE_COLOR
         * coverage * ambient_radiance;

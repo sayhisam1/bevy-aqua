@@ -268,9 +268,10 @@ pub struct OceanWaves {
     pub sea_state: SeaState,
     /// Strength of depth-driven shallow-water shoaling, clamped to `0..=1`.
     pub shallow_water_attenuation: f32,
-    /// Wind direction in degrees, measured clockwise from world +X when seen
-    /// from above. Both models align their spectra along this axis and
-    /// spread components across the accepted directional variance around it.
+    /// Dominant wave-travel direction in degrees, measured clockwise from
+    /// world +X when seen from above. Both models align their spectra and
+    /// decorative surface motion with this heading, then spread wave
+    /// components across the accepted directional variance around it.
     /// Startup-only: changing it after startup restarts nothing, so set it
     /// before the plugins run (like `sea_state`).
     pub wind_direction_degrees: f32,

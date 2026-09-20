@@ -260,6 +260,26 @@ var<private> effective_flow: vec2<f32> = vec2(0.0, 0.0);
 var<private> effective_time: f32 = 0.0;
 // Conservative world-XZ metres covered by one screen pixel; nonnegative.
 var<private> xz_footprint: f32 = 0.0;
+// Only above-water ocean shading uses the filtered spectral reconstruction.
+// Keep its measured filtered energy out of bounded and underwater legacy paths.
+var<private> filtered_spectral_surface: bool = false;
+var<private> spectral_filtered_variance: f32 = 0.0;
+
+fn set_spectral_filtered_variance(value: f32) {
+    spectral_filtered_variance = max(value, 0.0);
+}
+
+fn get_spectral_filtered_variance() -> f32 {
+    return spectral_filtered_variance;
+}
+
+fn set_filtered_spectral_surface() {
+    filtered_spectral_surface = true;
+}
+
+fn uses_filtered_spectral_surface() -> bool {
+    return filtered_spectral_surface;
+}
 
 fn set_xz_footprint(value: f32) {
     xz_footprint = value;

@@ -47,7 +47,7 @@ fn resolved_normal_is_shared_without_extra_detail_sampling() {
 fn both_endpoints_use_actual_roughness_inputs_and_one_far_call() {
     let far = function(OPTICS, "far_field_water");
     let body = function(MATERIAL, "shade_water_body");
-    let call = "unresolved_wave_roughness(\n        in.undisplaced_xz,\n        to_view,\n        in.sample_data.y,\n        near.near_detail_weight,\n        near.filtered_detail_variance,\n    )";
+    let call = "unresolved_wave_roughness(\n        in.undisplaced_xz,\n        to_view,\n        in.sample_data.y,\n        near.near_detail_weight,\n        near.filtered_detail_variance,\n        near.filtered_capillary_variance,\n    )";
     assert!(far.contains(call));
     assert!(body.contains(call));
     assert!(!far.contains("max(surface.reflection.w, 0.05)"));
@@ -82,7 +82,8 @@ fn far_tier_transfers_removed_detail_energy_without_fading_wave_slopes() {
     for clause in [
         "let near_energy = near_detail_weight * near_detail_weight;",
         "filtered_variance + (1.0 - near_energy) * detail_variance",
-        "(1.0 - near_energy * capillary_resolved * capillary_resolved)",
+        "(1.0 - capillary_resolved_energy * CAPILLARY_RESOLVED_ENERGY)",
+        "min(filtered_capillary_variance, capillary_resolved_energy",
         "surface.capillary.y * surface.capillary.y * ripple * ripple",
         "surface.reflection.y * grazing_boost",
         "return min(sqrt(max(slope_variance, 0.0)), surface.reflection.w);",
@@ -110,11 +111,22 @@ fn far_tier_transfers_removed_detail_energy_without_fading_wave_slopes() {
                 }
             }
             for capillary_resolved in [0.0_f32, 0.5, 1.0] {
-                let resolved = near * near * capillary_resolved * capillary_resolved * total;
-                let unresolved =
-                    total * (1.0 - near * near * capillary_resolved * capillary_resolved);
-                assert!((unresolved + resolved - total).abs() < 1e-7);
+                for filtered_fraction in [0.0_f32, 0.4, 1.0] {
+                    let retained = near * near * capillary_resolved * capillary_resolved;
+                    let resolved_energy = 0.45_f32.powi(2);
+                    let filtered = retained * resolved_energy * total * filtered_fraction;
+                    let unresolved = total * (1.0 - retained * resolved_energy) + filtered;
+                    let resolved = retained * resolved_energy * total * (1.0 - filtered_fraction);
+                    assert!((unresolved + resolved - total).abs() < 1e-7);
+                }
             }
         }
     }
+}
+
+#[test]
+fn reduced_resolved_capillary_energy_moves_into_roughness() {
+    let shader = include_str!("optics.wgsl");
+    assert!(shader.contains("* CAPILLARY_RESOLVED_ENERGY"));
+    assert!(shader.contains("+ min(filtered_capillary_variance"));
 }

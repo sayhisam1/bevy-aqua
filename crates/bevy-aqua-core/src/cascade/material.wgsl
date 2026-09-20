@@ -18,14 +18,14 @@
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
 
-#import aqua::cascade::{CREST_SSS_RANGE, CREST_SSS_UNCOMPRESSED, DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_FAR_TIER, DEBUG_MODE_FOAM, DEBUG_MODE_LIGHT_RADIANCE, DEBUG_MODE_REFLECTION, DEBUG_MODE_REFLECTION_FRACTION, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, DEBUG_MODE_WAVE_HEIGHT, LUMINANCE_EPSILON, LocalLightSample, MIN_NORMAL_Y, SAFE_LENGTH_SQUARED, advected_world, begin_invocation, capillary_resolved_weight, cascade_layout, effective_flow, far_tier_weight, field_params, godot_fresnel, invocation_extinction, invocation_ripple, invocation_scatter_tint, invocation_scattering_asymmetry, invocation_river_state, invocation_scatter_scale, lod_count, owning_body, sample_displacement, sample_field_flow, sample_field_level, sample_planar_reflection, set_body_optics, set_effective_flow, set_effective_time, set_fragment_river, set_river_ripple, set_xz_footprint, snap_and_transition, invocation_sun_roughness, surface}
+#import aqua::cascade::{CREST_SSS_RANGE, CREST_SSS_UNCOMPRESSED, DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_FAR_TIER, DEBUG_MODE_FOAM, DEBUG_MODE_LIGHT_RADIANCE, DEBUG_MODE_REFLECTION, DEBUG_MODE_REFLECTION_FRACTION, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, DEBUG_MODE_WAVE_HEIGHT, LUMINANCE_EPSILON, LocalLightSample, MIN_NORMAL_Y, SAFE_LENGTH_SQUARED, advected_world, begin_invocation, capillary_resolved_weight, cascade_layout, effective_flow, far_tier_weight, field_params, godot_fresnel, invocation_extinction, invocation_ripple, invocation_scatter_tint, invocation_scattering_asymmetry, invocation_river_state, invocation_scatter_scale, lod_count, owning_body, sample_displacement, sample_field_flow, sample_field_level, sample_planar_reflection, set_body_optics, set_effective_flow, set_effective_time, set_fragment_river, set_river_ripple, set_xz_footprint, set_filtered_spectral_surface, snap_and_transition, invocation_sun_roughness, surface}
 
-#import aqua::waves::displace::{WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, crest_sss, detail_normal_sample, far_displacement, far_normal_cross, sample_fft_normal_cross}
+#import aqua::waves::displace::{WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, crest_sss, detail_normal_sample, far_displacement, far_normal_cross, filtered_fft_normal, sample_fft_normal_cross}
 
 #import aqua::foam::contract::FOAM_PATTERN_RESOLUTION
 #import aqua::foam::shade::{CREST_FOAM_NORMAL_STRENGTH, CREST_FOAM_SPECULAR_BOOST, INV_PI, CREST_FOAM_SPECULAR_FALLOFF, CREST_FOAM_WHITE_COLOR, foam_bubble_colour, local_foam_light, river_streak_coverage, sample_foam_density, surface_foam_mask}
 
-#import aqua::shore::water::{blended_water_depth}
+#import aqua::shore::water::{bed_water_depth, blended_water_depth}
 #import bevy_aqua_core::deform::{deform_current}
 #import bevy_aqua_core::material::{BodyLightingState, CameraDepthDebug, CameraDepthPath, FoamState, LocalLightingState, MediumState, NearSurface, PrimaryLightState, SurfaceVertexOutput, TransmissionState}
 #import aqua::light::incident::{GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, local_light_contribution, resolve_primary_light, safe_normalize, sample_local_light, smith_masking_shadowing, strongest_incident_directional_light, view_direction}
@@ -232,6 +232,7 @@ fn shade_water_body(
         in.sample_data.y,
         near.near_detail_weight,
         near.filtered_detail_variance,
+        near.filtered_capillary_variance,
     );
     let view_alignment = clamp(dot(near.lighting_normal, to_view), 0.0, 1.0);
     let fresnel = godot_fresnel(view_alignment);
@@ -504,11 +505,12 @@ fn fragment(
     in: SurfaceVertexOutput,
     @builtin(front_facing) is_front: bool,
 ) -> @location(0) vec4<f32> {
-    // Position derivatives measure adjacent fragments in world XZ. Their
-    // maximum length conservatively bounds metres per screen pixel for LOD.
+    // Waves and breakup sample the undisplaced surface parameter. Differentiate
+    // that same coordinate: displaced XZ underestimates its footprint in choppy
+    // compressed crests and ties filtering errors to the geometry morph.
     set_xz_footprint(max(
-        length(dpdx(in.world_position.xz)),
-        length(dpdy(in.world_position.xz)),
+        length(dpdx(in.undisplaced_xz)),
+        length(dpdy(in.undisplaced_xz)),
     ));
     // One shared tile set renders every scene: unclaimed texels discard
     // unless the Ocean resource is present, so localized scenes pay fill
@@ -604,14 +606,23 @@ fn fragment(
     var has_shared_depth_path = false;
     // Resolve at the candidate tier. An opacity-dependent continuous change
     // would change the normal and invalidate the accepted refracted sample.
-    var near = resolve_near_surface(in, surface_lod, geometric_normal, far_tier, mode);
+    // All spectral shading uses the same fragment reconstruction. Switching
+    // from morphed vertex normals to cached normals at one distance changes
+    // the frequency response even if the blend coefficient is smooth.
+    var shading_normal = geometric_normal;
+    if !bounded && surface.reflection.x > 0.5 && mode >= DEBUG_MODE_BEAUTY {
+        set_filtered_spectral_surface();
+        shading_normal = filtered_fft_normal(in.undisplaced_xz,
+            bed_water_depth(in.undisplaced_xz));
+    }
+    var near = resolve_near_surface(in, surface_lod, shading_normal, far_tier, mode);
     if far_tier > 0.0 {
         shared_depth_path = camera_depth_path(in);
         has_shared_depth_path = true;
         if !far_path_opaque(in, near.normal, shared_depth_path) {
             far_tier = 0.0;
             // Restore the exact near path, including its detail normal.
-            near = resolve_near_surface(in, surface_lod, geometric_normal, far_tier, mode);
+            near = resolve_near_surface(in, surface_lod, shading_normal, far_tier, mode);
         }
     }
     if far_tier > 0.0 {

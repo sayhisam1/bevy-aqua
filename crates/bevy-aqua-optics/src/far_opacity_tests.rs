@@ -158,12 +158,12 @@ fn raw_depth_cache_survives_foam_and_rejection_reconstructs_near_normal() {
     ordered(
         fragment,
         &[
-            "var near = resolve_near_surface(in, surface_lod, geometric_normal, far_tier, mode);",
+            "var near = resolve_near_surface(in, surface_lod, shading_normal, far_tier, mode);",
             "shared_depth_path = camera_depth_path(in);",
             "has_shared_depth_path = true;",
             "if !far_path_opaque(in, near.normal, shared_depth_path) {",
             "far_tier = 0.0;",
-            "near = resolve_near_surface(in, surface_lod, geometric_normal, far_tier, mode);",
+            "near = resolve_near_surface(in, surface_lod, shading_normal, far_tier, mode);",
             "far_water = far_field_water(",
             "if far_tier >= 1.0 {",
             "return vec4(far_water, 1.0);",
