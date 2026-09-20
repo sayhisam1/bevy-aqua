@@ -145,6 +145,8 @@ pub fn bake(bodies: &[ResolvedWaterBody], has_ocean: bool) -> (FieldParams, Imag
             body.optics.map(|optics| BodyOptics {
                 extinction: optics.extinction,
                 scatter_scale: optics.scatter_scale,
+                scatter_tint: optics.scatter_tint,
+                scattering_asymmetry: optics.scattering_asymmetry,
                 sun_roughness: optics.sun_roughness,
             }),
         );

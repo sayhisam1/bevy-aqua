@@ -6,8 +6,25 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- Opt-in `underwater` integration with a homogeneous single-scattering volume,
+  exact water-to-air Fresnel/TIR underside shading, and viewport-correct air-window
+  distortion, based on PR #9 by [@wellscrosby](https://github.com/wellscrosby).
+- `WaterOptics::scatter_tint`, `WaterOptics::scattering_asymmetry`, and
+  feature-gated `UnderwaterSettings`. Existing struct literals must initialize
+  the two new `WaterOptics` fields; shipped presets retain their prior surface
+  calibration. See [the migration handoff](MIGRATION.md#underwater-optics-and-opt-in-rendering).
+- The optional `bevy-aqua-volume` crate and a procedural `underwater` comparison
+  example. The example can run feature-off or with `--features underwater`.
 - A focused native/WebGPU `debug_views` example that automatically cycles
   through every `AquaDebug` diagnostic mode.
+
+### Known limitations
+
+- Underwater volume integration uses a homogeneous horizontal mean plane and
+  one active Aqua view. It has no displaced per-pixel waterline, SSR,
+  bounded-body side clipping, or multi-camera contract. Orthographic cameras
+  skip the volume composite. Native MSAA-off/default captures are checked;
+  other configurations and browser runtime remain unverified. See [`docs/underwater.md`](docs/underwater.md).
 
 ## [0.1.3] - 2026-08-30
 

@@ -23,14 +23,16 @@ fn uv_to_world(uv: Vec2, cascade: Cascade) -> Vec2 {
 }
 
 #[test]
-fn body_params_abi_is_six_full_vec4s() {
+fn body_params_abi_is_seven_full_vec4s() {
     // Full vec4 fields only: naga and encase disagree on smaller members
     // (the flow-advection uniform bug). flags, extent, aabb_min,
-    // aabb_size, optics_a, and optics_b occupy bytes 0..96 in that order.
-    assert_eq!(std::mem::size_of::<BodyParams>(), 96);
+    // aabb_size, optics_a, optics_b, and optics_c occupy bytes 0..112 in that order.
+    assert_eq!(std::mem::size_of::<BodyParams>(), 112);
     let optics = crate::cascade::BodyOptics {
         extinction: Vec3::new(0.28, 0.16, 0.12),
         scatter_scale: 0.18,
+        scatter_tint: Vec3::new(0.8, 1.0, 1.2),
+        scattering_asymmetry: 0.75,
         sun_roughness: 0.1,
     };
     let mut bytes = Vec::new();
@@ -44,8 +46,8 @@ fn body_params_abi_is_six_full_vec4s() {
             Some(optics),
         ))
         .expect("body params write");
-    assert_eq!(bytes.len(), 96);
-    let words: [f32; 24] = std::array::from_fn(|index| {
+    assert_eq!(bytes.len(), 112);
+    let words: [f32; 28] = std::array::from_fn(|index| {
         f32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap())
     });
     assert_eq!(
@@ -56,7 +58,8 @@ fn body_params_abi_is_six_full_vec4s() {
             -70.0, -5.0, 0.0, 0.0, //
             60.0, 50.0, 0.0, 0.0, //
             0.28, 0.16, 0.12, 1.0, //
-            0.18, 0.1, 0.0, 0.0, // scatter, roughness, reserved padding
+            0.18, 0.1, 0.0, 0.75, // scatter, roughness, reserved, HG g
+            0.8, 1.0, 1.2, 0.0, // scatter tint, reserved
         ]
     );
 }

@@ -8,7 +8,7 @@
     mesh_view_bindings::{globals, lights, view},
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
-#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, field_params, sample_field_level, invocation_extinction, invocation_scatter_scale, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, surface}
+#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, field_params, sample_field_level, invocation_extinction, invocation_scatter_scale, invocation_underwater_scatter_scale, invocation_scatter_tint, invocation_scattering_asymmetry, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, surface}
 #import aqua::waves::displace::{WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, detail_normal_sample}
 #import aqua::foam::shade::{sample_foam_density}
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
@@ -644,3 +644,99 @@ fn resolve_transmission(
     }
     return TransmissionState(body, vec4(0.0), false);
 }
+
+
+#ifdef UNDERWATER
+#import aqua::medium::{N_WATER, PATH_LENGTH_MAX, fresnel_water_to_air, medium_radiance_oriented}
+
+// Water-to-air interface. Reflected rays use the bounded homogeneous medium;
+// screen-space ray marching remains omitted until it has validated quality controls.
+fn shade_underside(
+    in: SurfaceVertexOutput,
+    surface_lod: u32,
+    geometric_normal: vec3<f32>,
+    to_view: vec3<f32>,
+    mode: u32,
+) -> vec4<f32> {
+    let near = resolve_near_surface(in, surface_lod, geometric_normal, 0.0, mode);
+    let incident = safe_normalize(-to_view, vec3(0.0, -1.0, 0.0));
+    let initial_water_normal = safe_normalize(-near.normal, vec3(0.0, -1.0, 0.0));
+    let candidate_up = -initial_water_normal;
+    // Raster back-facing does not guarantee a resolved microdetail normal faces
+    // the incident ray. Continuously project it into the visible hemisphere;
+    // unlike faceforward this does not introduce a whole-normal sign flip.
+    let visibility = dot(incident, candidate_up);
+    let corrected_up = candidate_up
+        + incident * max(1e-3 - visibility, 0.0);
+    let facet_up = safe_normalize(corrected_up, incident);
+    let water_normal = -facet_up;
+    let reflected_direction = reflect(incident, water_normal);
+    let transmitted_direction = refract(incident, water_normal, N_WATER);
+    let cos_water = clamp(dot(-incident, water_normal), 0.0, 1.0);
+    let fresnel = fresnel_water_to_air(cos_water);
+    let roughness = unresolved_wave_roughness(
+        in.undisplaced_xz,
+        to_view,
+        in.sample_data.y,
+        near.near_detail_weight,
+        near.filtered_detail_variance,
+    );
+    // A reflected water-side ray cannot sample the air environment probe.
+    // Evaluate the homogeneous open-path medium in the local facet frame.
+    // The paired reflection normal keeps this ray in the local water halfspace
+    // even when its world Y component points upward.
+    let reflected = medium_radiance_oriented(
+        vec3(0.0),
+        reflected_direction,
+        PATH_LENGTH_MAX,
+        0.0,
+        invocation_extinction(),
+        invocation_underwater_scatter_scale(),
+        invocation_scatter_tint(),
+        invocation_scattering_asymmetry(),
+        facet_up,
+    );
+    // WGSL refract returns zero at total internal reflection. Exact Fresnel
+    // independently reaches one there, so this branch avoids invalid lookups.
+    if dot(transmitted_direction, transmitted_direction) < LUMINANCE_EPSILON {
+        return vec4(reflected, 1.0);
+    }
+
+    var window = sample_environment(
+        transmitted_direction,
+        -water_normal,
+        roughness,
+    );
+#ifdef DEPTH_PREPASS
+    let viewport_origin = view.viewport.xy;
+    let viewport_size = view.viewport.zw;
+    // Reuse the accepted front-face refraction contract: camera-projected
+    // perturbation, shallow-gap scaling, viewport-local clamp, and endpoint
+    // texel selection all stay identical across the interface.
+    let distortion_path = camera_depth_path(in);
+    let distortion = camera_depth_debug_from_path(
+        in,
+        near.lighting_normal,
+        distortion_path,
+    );
+    let warped_uv = distortion.refracted_uv;
+    let warped_pixel = min(
+        warped_uv * viewport_size,
+        viewport_size - vec2(1.0),
+    ) + viewport_origin;
+    let warped_position = vec4(warped_pixel, in.position.zw);
+    let warped_depth = prepass_utils::prepass_depth(warped_position, 0u);
+    if warped_depth > 0.0 && warped_depth < in.position.z {
+        let hit = (view.world_from_view
+            * vec4(camera_view_position(warped_uv, warped_depth), 1.0)).xyz;
+        if hit.y > in.world_position.y + 0.02 {
+            window = opaque_background(warped_uv);
+        }
+    }
+#endif
+    // Radiance invariant across the interface: L_air = L_water / n²,
+    // therefore the sampled air radiance is n² larger in the water domain.
+    window *= N_WATER * N_WATER;
+    return vec4(mix(window, reflected, fresnel), 1.0);
+}
+#endif

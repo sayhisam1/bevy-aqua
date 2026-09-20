@@ -36,7 +36,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build WebGPU examples
-        run: cargo build --release --target wasm32-unknown-unknown --examples
+        run: |
+          cargo build --release --target wasm32-unknown-unknown --examples
+          # Replace the feature-off underwater artifact with the gallery build.
+          cargo build --release --target wasm32-unknown-unknown --example underwater --features underwater
 
       - name: Install matching wasm-bindgen CLI
         run: |
@@ -58,6 +61,7 @@ jobs:
             terrain_bed
             debug_views
             water_optics
+            underwater
             planar_reflection
             wave_query
           )
@@ -70,6 +74,7 @@ jobs:
             "Terrain height input and shallow-water optics"
             "Automatic cycle through all Aqua diagnostics"
             "Water appearance presets shown side by side"
+            "Opt-in submerged volume and underside integration"
             "Planar reflection of marked scene geometry"
             "GPU surface queries driving a procedural buoy"
           )
@@ -111,7 +116,13 @@ jobs:
             description="${descriptions[$index]}"
             cat >> public/index.html <<HTML
               <a class="card" href="./$example/">
+          HTML
+            if [[ -f "public/screenshots/$example.jpg" ]]; then
+              cat >> public/index.html <<HTML
                 <img src="./screenshots/$example.jpg" alt="$description">
+          HTML
+            fi
+            cat >> public/index.html <<HTML
                 <div><strong>$example</strong><span>$description</span></div>
               </a>
           HTML
@@ -127,6 +138,10 @@ jobs:
             mkdir -p "public/$example"
             wasm-bindgen               --target web               --out-dir "public/$example"               --out-name "$example"               "target/wasm32-unknown-unknown/release/examples/$example.wasm"
 
+            status_background=""
+            if [[ -f "public/screenshots/$example.jpg" ]]; then
+              status_background="background: center / cover url('../screenshots/$example.jpg');"
+            fi
             cat > "public/$example/index.html" <<HTML
           <!doctype html>
           <html lang="en">
@@ -137,7 +152,7 @@ jobs:
             <style>
               html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #07141d; }
               canvas { display: block; width: 100vw !important; height: 100vh !important; }
-              #status { position: fixed; inset: 0; display: grid; place-items: center; color: white; font: 1rem system-ui, sans-serif; background: center / cover url('../screenshots/$example.jpg'); }
+              #status { position: fixed; inset: 0; display: grid; place-items: center; color: white; font: 1rem system-ui, sans-serif; $status_background }
               #status span { padding: .8rem 1rem; border-radius: 8px; background: rgb(0 0 0 / 70%); }
             </style>
           </head>

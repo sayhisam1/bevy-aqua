@@ -81,6 +81,7 @@ jobs:
             bevy-aqua-light
             bevy-aqua-optics
             bevy-aqua-core
+            bevy-aqua-volume
             bevy-aqua-waves
             bevy-aqua-foam
             bevy-aqua-shore

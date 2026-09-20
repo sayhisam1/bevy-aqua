@@ -113,6 +113,10 @@ pub struct WaterOptics {
     /// Multiplier on the volume-scatter endpoint. Small values keep the
     /// deep-pool colour dark instead of ocean turquoise.
     pub scatter_scale: f32,
+    /// Per-channel particle-scatter chromaticity for the underwater medium.
+    pub scatter_tint: Vec3,
+    /// Henyey-Greenstein asymmetry, clamped to a safe range by shaders.
+    pub scattering_asymmetry: f32,
     /// Direct-light lobe roughness; negative inherits the ocean value.
     /// Calm fresh water typically uses ~0.1 for sharper glints. Fresnel
     /// always uses the same dielectric response for every reflection source.
@@ -134,6 +138,8 @@ impl WaterOptics {
     pub const DEEP_OCEAN: Self = Self {
         extinction: Vec3::new(0.90, 0.30, 0.35),
         scatter_scale: 1.0,
+        scatter_tint: Vec3::ONE,
+        scattering_asymmetry: 0.8,
         sun_roughness: -1.0,
         deep_color: Vec3::new(0.0, 0.002_695_407_3, 0.169_811_31),
         grazing_color: Vec3::new(0.0, 0.003_921_569, 0.168_627_4),
@@ -145,6 +151,8 @@ impl WaterOptics {
     pub const COASTAL: Self = Self {
         extinction: Vec3::new(0.86, 0.24, 0.39),
         scatter_scale: 1.0,
+        scatter_tint: Vec3::ONE,
+        scattering_asymmetry: 0.8,
         sun_roughness: -1.0,
         deep_color: Vec3::new(0.0, 0.018, 0.13),
         grazing_color: Vec3::new(0.0, 0.025, 0.145),
@@ -156,6 +164,8 @@ impl WaterOptics {
     pub const TROPICAL: Self = Self {
         extinction: Vec3::new(0.78, 0.14, 0.52),
         scatter_scale: 1.0,
+        scatter_tint: Vec3::ONE,
+        scattering_asymmetry: 0.8,
         sun_roughness: -1.0,
         deep_color: Vec3::new(0.0, 0.08, 0.06),
         grazing_color: Vec3::new(0.0, 0.10, 0.075),

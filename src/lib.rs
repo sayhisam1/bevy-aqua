@@ -17,6 +17,10 @@
 //! Insert a [`BedHeightMap`] built from the terrain heightfield for wave
 //! attenuation and shoreline foam. Without one, water uses the deep default.
 //!
+//! With the opt-in `underwater` feature, [`AquaPlugin`] adds the fullscreen
+//! medium pass and water-surface underside. See `docs/underwater.md` for its
+//! bounded mean-plane model.
+//!
 //! With the `query` feature, add `WaveQuery` to floating entities to receive
 //! `WaveSurface` samples from the same cascades used for rendering.
 //!
@@ -62,6 +66,8 @@ pub use bevy_aqua_query::{WaveQuery, WaveSurface};
 pub use bevy_aqua_reflect::ReflectedInWater;
 #[cfg(feature = "spray")]
 pub use bevy_aqua_spray::{SprayQuality, SpraySettings};
+#[cfg(feature = "underwater")]
+pub use bevy_aqua_volume::UnderwaterSettings;
 /// Adds the ocean renderer and its simulation plugins.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AquaPlugin;
@@ -75,6 +81,8 @@ impl Plugin for AquaPlugin {
         app.add_plugins(bevy_aqua_waves::AquaWavesPlugin);
         app.add_plugins(bevy_aqua_foam::AquaFoamPlugin);
         app.add_plugins(bevy_aqua_shore::AquaShorePlugin);
+        #[cfg(feature = "underwater")]
+        app.add_plugins(bevy_aqua_volume::AquaVolumePlugin);
         #[cfg(feature = "motion")]
         app.add_plugins(bevy_aqua_motion::AquaMotionPlugin);
         #[cfg(feature = "reflect")]

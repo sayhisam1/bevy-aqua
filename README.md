@@ -6,7 +6,7 @@
 
 Camera-centred ocean rendering for Bevy 0.19 with analytic and FFT waves,
 depth-aware transmission, reflections, persistent foam, localized water
-bodies, and GPU surface queries.
+bodies, GPU surface queries, and opt-in underwater rendering.
 
 ![FFT ocean at sunset with planar buoy reflection](docs/images/sunset-fft.jpg)
 
@@ -15,6 +15,7 @@ bodies, and GPU surface queries.
 - Five camera-centred displacement cascades with smooth LOD blending.
 - Crest-style analytic waves or Tessendorf spectral waves.
 - Beer-Lambert transmission, refraction, reflections, and scene lighting.
+- Opt-in underwater volume scattering and water-surface underside shading.
 - Persistent whitecaps and shoreline foam.
 - Static terrain heightfields for shoaling and shallow-water optics.
 - Bounded ponds, lakes, and river corridors with per-body optics.
@@ -43,8 +44,9 @@ Browser WebGPU/Wasm support was contributed by
 
 The default `query` and `reflect` features enable GPU wave probes and planar
 reflections. The optional `spray` feature adds `bevy-aqua-spray` and `bevy_hanabi`,
-implies `query`, and defaults to `Off` at runtime. Mobile and other desktop APIs
-are not yet verified.
+implies `query`, and defaults to `Off` at runtime. The optional `underwater`
+feature adds the camera-volume pass and two-sided underside shading; it is not
+enabled by default. Mobile and other desktop APIs are not yet verified.
 
 ## Quick start
 
@@ -144,6 +146,31 @@ it is not a surface-identity test or exact refracted filtering. Sun/shadow
 selection remains at the water fragment. The pattern and incoming attenuation
 are still flat-interface surrogates, not traced sun-to-receiver caustics.
 Disabling caustics also skips these four neighbor reads.
+
+### Underwater rendering
+
+Enable Cargo feature `underwater` to let `AquaPlugin` install the submerged
+camera-volume pass and water-surface underside shading:
+
+```sh
+cargo run --example underwater --features underwater
+```
+
+The same example without `--features underwater` is the feature-off control.
+For a readable comparison, that scene explicitly derives from
+`WaterOptics::CLEAR_FRESH` with extinction `(0.06, 0.025, 0.015) m⁻¹` and
+scatter scale `0.18`; this does not change `DEEP_OCEAN` or any production
+default. The feature reuses `WaterOptics`; its new `scatter_tint` and
+`scattering_asymmetry` fields control medium scatter colour and directionality.
+`UnderwaterSettings::receiver_relighting` defaults to `false` because the
+optional approximation also attenuates emissive and local-light contributions.
+
+This first integration uses a homogeneous horizontal mean plane. It does not
+claim a displaced per-pixel waterline, screen-space reflections, bounded-body
+side clipping, or multi-camera support. Orthographic cameras skip the volume
+composite. Read [the underwater integration bounds](docs/underwater.md) before
+shipping it. The presence of the example and browser build configuration is not
+a claim of visual validation on every target.
 
 ### Terrain bed
 
@@ -274,6 +301,7 @@ source code.
 | `terrain_bed` | Terrain height input, shoaling, and shallow-water optics | <img src="docs/images/examples/terrain_bed.jpg" alt="terrain_bed example" width="220"> |
 | `debug_views` | Automatic cycle through all Aqua diagnostics | <img src="docs/images/examples/debug_views.jpg" alt="debug_views example" width="220"> |
 | `water_optics` | Water appearance presets shown side by side | <img src="docs/images/examples/water_optics.jpg" alt="water_optics example" width="220"> |
+| `underwater` | Opt-in submerged volume and underside integration | Screenshot pending |
 | `planar_reflection` | Planar reflection of marked scene geometry | <img src="docs/images/examples/planar_reflection.jpg" alt="planar_reflection example" width="220"> |
 | `wave_query` | GPU surface queries driving a procedural buoy | <img src="docs/images/examples/wave_query.jpg" alt="wave_query example" width="220"> |
 
@@ -281,6 +309,14 @@ Run any scene natively:
 
 ```sh
 cargo run --example ocean
+```
+
+The underwater comparison uses the same public scene with the feature off and
+on:
+
+```sh
+cargo run --example underwater
+cargo run --example underwater --features underwater
 ```
 
 The same source runs with browser WebGPU:

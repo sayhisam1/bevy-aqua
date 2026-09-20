@@ -103,9 +103,12 @@ struct SurfaceParams {
     reflection: vec4<f32>,
     sun: vec4<f32>,
     debug: vec4<f32>,
+    /// rgb: extinction; w: particle scatter scale.
     fog_density: vec4<f32>,
     sea_floor: vec4<f32>,
     sss_tint: vec4<f32>,
+    /// Underwater particle scatter tint (rgb) and HG asymmetry (w).
+    medium_scatter: vec4<f32>,
     sss: vec4<f32>,
     detail: vec4<f32>,
     capillary: vec4<f32>,
@@ -129,8 +132,10 @@ struct BodyParams {
     aabb_size: vec4<f32>,
     /// rgb: per-channel Beer-Lambert extinction in 1/m; w: optics enable.
     optics_a: vec4<f32>,
-    /// x: scatter-endpoint scale; y: direct-light roughness; zw reserved.
+    /// x: scatter-endpoint scale; y: direct-light roughness; w: HG asymmetry.
     optics_b: vec4<f32>,
+    /// rgb: medium scatter tint; w reserved.
+    optics_c: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var lod_data: texture_2d_array<f32>;
@@ -288,6 +293,9 @@ var<private> invocation_optics_b: vec4<f32> = vec4(0.0);
 /// reads clear over its bed instead of ocean-teal.
 var<private> body_extinction: vec3<f32> = vec3(0.0);
 var<private> body_scatter_scale: f32 = 1.0;
+var<private> underwater_scatter_scale: f32 = 1.0;
+var<private> body_scatter_tint: vec3<f32> = vec3(1.0);
+var<private> body_scattering_asymmetry: f32 = 0.8;
 
 /// Baked flow sample at the current fragment (xy: current m/s, z: signed
 /// bank margin, w: channel half-width in metres).
@@ -335,9 +343,18 @@ fn set_fragment_river(sample: vec4<f32>) {
 
 /// Fragment entry: records the effective Beer-Lambert extinction and the
 /// scatter-endpoint scale after fresh-water optics override.
-fn set_body_optics(extinction: vec3<f32>, scatter_scale: f32) {
+fn set_body_optics(
+    extinction: vec3<f32>,
+    scatter_scale: f32,
+    medium_scatter_scale: f32,
+    scatter_tint: vec3<f32>,
+    scattering_asymmetry: f32,
+) {
     body_extinction = extinction;
     body_scatter_scale = scatter_scale;
+    underwater_scatter_scale = medium_scatter_scale;
+    body_scatter_tint = scatter_tint;
+    body_scattering_asymmetry = scattering_asymmetry;
 }
 
 /// Fragment entry: records the river ripple-strength multiplier.
@@ -351,6 +368,18 @@ fn invocation_extinction() -> vec3<f32> {
 
 fn invocation_scatter_scale() -> f32 {
     return body_scatter_scale;
+}
+
+fn invocation_underwater_scatter_scale() -> f32 {
+    return underwater_scatter_scale;
+}
+
+fn invocation_scatter_tint() -> vec3<f32> {
+    return body_scatter_tint;
+}
+
+fn invocation_scattering_asymmetry() -> f32 {
+    return body_scattering_asymmetry;
 }
 
 fn invocation_river_state() -> RiverState {
