@@ -1,5 +1,22 @@
 # Migration notes (unreleased)
 
+## Surface detail and wave heading
+
+`OceanWaves::wind_direction_degrees` now consistently means the dominant
+**travel** heading for both analytic and spectral waves. Earlier analytic waves
+travelled opposite their authored component direction, while nonzero spectral
+headings were rotated with the opposite sign. Scenes that compensated for those
+signs must remove that compensation.
+
+Surface detail normals, capillary ripples, and visible foam now travel with the
+same dominant heading. Their texture coordinates use rotated, non-harmonic
+layers rather than an equal-strength counter-moving layer. Resolved capillary
+slope is reduced to suppress sub-metre grain, while its energy still transfers
+to filtered roughness at distance. This changes appearance and motion but adds
+no public fields or GPU bindings. `SurfaceParams::advection.zw`, previously
+reserved, now stores the unit travel heading; code that mirrors the internal GPU
+ABI must populate it.
+
 ## Underwater optics and opt-in rendering
 
 ### ELI5 handoff

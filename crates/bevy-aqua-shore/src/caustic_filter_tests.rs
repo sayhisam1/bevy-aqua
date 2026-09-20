@@ -84,7 +84,7 @@ fn caustic_lod_uses_receiver_coordinates_and_explicit_footprint() {
     let optics = include_str!("../../bevy-aqua-optics/src/optics.wgsl");
     let cascade = include_str!("../../bevy-aqua-core/src/cascade.rs");
     // The lighting footprint still exists; the obsolete caustic private cache does not.
-    assert!(material.contains("set_xz_footprint(max(\n        length(dpdx(in.world_position.xz)),\n        length(dpdy(in.world_position.xz)),\n    ));"));
+    assert!(material.contains("set_xz_footprint(max(\n        length(dpdx(in.undisplaced_xz)),\n        length(dpdy(in.undisplaced_xz)),\n    ));"));
     for source in [shore, material, optics] {
         assert!(!source.contains("set_caustic_xz_footprint"));
         assert!(!source.contains("caustic_screen_xz_footprint"));

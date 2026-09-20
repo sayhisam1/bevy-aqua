@@ -95,7 +95,8 @@ fn generate(@builtin(global_invocation_id) id: vec3<u32>) {
 
     for (var index = range.x; index < range.y; index += 1u) {
         let wave = params.waves[index];
-        let temporal_phase = wave.phase + wave.angular_frequency * params.time.x;
+        // Positive authored directions are travel directions, matching FFT waves.
+        let temporal_phase = wave.phase - wave.angular_frequency * params.time.x;
         let wrapped_phase = temporal_phase - floor(temporal_phase / TAU) * TAU;
         let angle = wave.wave_number * dot(wave.direction, world_xz) + wrapped_phase;
         // Extend Crest's per-wave attenuation with a smooth breaker profile.

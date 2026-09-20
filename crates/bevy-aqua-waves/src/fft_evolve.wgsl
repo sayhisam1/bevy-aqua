@@ -95,6 +95,21 @@ fn evolve(@builtin(global_invocation_id) id: vec3<u32>) {
         horizontal_x = chop * k.x / k_length * i_height;
         horizontal_z = chop * k.y / k_length * i_height;
     }
-    textureStore(height_x, vec2<i32>(id.xy), i32(id.z), vec4(height, horizontal_x));
-    textureStore(z_field, vec2<i32>(id.xy), i32(id.z), vec4(horizontal_z, 0.0, 0.0));
+    // Four complex transforms carry eight real fields: displacement XYZ and
+    // five independent continuous derivatives. For Hermitian spectra A,B,
+    // IFFT(A+iB) = a+i*b: two real fields, with no extra transform.
+    // height_x: [Dy, Dx, Dz, dDy/dx]; z_field: [dDy/dz, dDx/dx, dDx/dz, dDz/dz].
+    let kh = vec2(-height.y, height.x);
+    let chop = CHOP * (1.0 - fft.params.w);
+    let inv_k = 1.0 / max(k_length, 1e-6);
+    let hx = k.x * kh;
+    let hz = k.y * kh;
+    let dxx = -chop * k.x * k.x * inv_k * height;
+    let dxz = -chop * k.x * k.y * inv_k * height;
+    let dzz = -chop * k.y * k.y * inv_k * height;
+    textureStore(height_x, vec2<i32>(id.xy), i32(id.z),
+        vec4(height + vec2(-horizontal_x.y, horizontal_x.x),
+            horizontal_z + vec2(-hx.y, hx.x)));
+    textureStore(z_field, vec2<i32>(id.xy), i32(id.z),
+        vec4(hz + vec2(-dxx.y, dxx.x), dxz + vec2(-dzz.y, dzz.x)));
 }

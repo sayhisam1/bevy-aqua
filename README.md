@@ -104,9 +104,11 @@ Insert `OceanWaves` and `AquaSettings` before `AquaPlugin` to replace their
 defaults.
 
 `OceanWaves` selects `WaveModel::Analytic` or `WaveModel::Spectral`. It also
-sets sea state, shallow-water attenuation, wind direction and speed, fetch,
-and world-XZ flow. `sea_state`, wind, and fetch determine startup spectrum
-data; set them before the plugin starts.
+sets sea state, shallow-water attenuation, dominant wave-travel direction and
+speed, fetch, and world-XZ flow. Detail normals and visible foam travel with
+that heading on rotated, non-harmonic texture grids instead of a counter-moving
+repeat lattice. `sea_state`, wind, and fetch determine startup spectrum data;
+set them before the plugin starts.
 
 `AquaSettings` selects a `WaterOptics` preset and a `detail_strength` in
 `0..=2`. `WaterOptics::DEEP_OCEAN` is the default. Coastal, tropical, and
@@ -379,6 +381,55 @@ Two `AquaDebug` variants have been removed:
   reconstruction filter. The old bilinear-only comparison is no longer available.
 
 The normal foam filters and remaining diagnostic views are unchanged.
+
+## World-space spectral shading (unreleased)
+
+Above-water ocean normals now sum exclusive periodic displacement derivatives
+before forming the normal. Pixel footprint alone filters their frequency bands.
+Mesh-ring coverage no longer removes lighting detail or creates camera-centred
+roughness bands. The mesh, query surface, motion vectors and underwater wave
+path keep their existing deformation.
+
+The FFT packs displacement XYZ and five continuous derivative entries into its
+existing four complex transform lanes. The geometry/query decode is algebraically
+unchanged. Packing changes floating-point arithmetic order, so it is not bitwise
+identical: validation must bound the resulting rounding differences.
+
+The cache keeps five legacy geometry-normal layers plus eight analytic derivative pairs.
+Each pair stores `dD/dx` and `dD/dz` in RGB and vertical-slope second moments in A.
+Dense mip averages provide the slope energy actually removed by filtering; that
+energy becomes roughness. RGBA16F storage is approximate. Negative residual
+variance from rounding is clamped to zero. Eight diagnostic spans
+(`surface_mip_1` through `surface_mip_8`) cover mip generation.
+
+Four additional bounded layers store finite-difference band-slope predictions
+and midpoint curvature. These keep the shallow correction's actual and expected
+normals on the same derivative operator. The prediction follows each band's
+footprint and support; it is not a periodic bathymetry cache. Interpolation and
+the quadratic retention response are explicit approximations.
+
+The 25-layer 256² cache, including mips, uses 17,476,200 bytes (about16.67 MiB),
+2.67 MiB more than the preceding21-layer cache. It uses the same material
+texture binding and stays below WebGPU's minimum256 array-layer limit. No extra
+FFT is performed. No-bed scenes resolve five derivative fields; bed-enabled
+shoaling keeps four separate long-wave bins, for eight fields. Unused fields are
+not dispatched or sampled. Bed scenes add two measured compute spans:
+`aqua_surface_shallow_prediction` builds the matched FD prediction before
+`aqua_surface_analytic_overwrite` replaces only the exclusive derivatives.
+Mip generation then runs once. No-bed scenes bypass both added passes.
+
+Depth attenuation is evaluated at the actual world location, so periodic waves
+never repeat a coastline. Long-wave bins keep the producer's representative
+wavelength laws. Fine octaves use aggregate attenuation, corrected by the local
+accurate cache below6m depth where valid. That bounded correction fades before
+losing filter support. This is not exact full-spectrum shoaling outside local
+coverage, nor a derivative of the varying attenuation field.
+
+Decorative normals and foam breakup keep fixed world scale and speed instead of
+growing with mesh LOD. Foam retains the near-field coverage curve and no longer
+loses coverage by crossfading unrelated patterns before thresholding. Filtering
+can still change subpixel appearance; these changes are not a guarantee of
+alias-free rendering, temporal stability, or overall visual-style acceptance.
 
 ## AI disclosure
 

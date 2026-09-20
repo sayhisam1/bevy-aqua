@@ -76,8 +76,7 @@ fn resolve(@builtin(global_invocation_id) id: vec3<u32>) {
         // Deep-water fast path: shoaling is exactly vec2(1.0) for every bin,
         // so the four-bin sum reduces to this one layer with no depth read.
         let packed = textureLoad(height_x, vec2<i32>(id.xy), i32(id.z), 0);
-        let z = textureLoad(z_field, vec2<i32>(id.xy), i32(id.z), 0).x;
-        displacement = vec3(packed.z, packed.x, z) * normalization;
+        displacement = vec3(packed.y, packed.x, packed.z) * normalization;
     } else {
         let coverage = cascade.texel_width * cascade.texture_res;
         let uv = (vec2<f32>(id.xy) + vec2(0.5)) / vec2<f32>(cascade.texture_res);
@@ -85,7 +84,6 @@ fn resolve(@builtin(global_invocation_id) id: vec3<u32>) {
         for (var bin = 0u; bin < bins; bin += 1u) {
             let layer = id.z * bins + bin;
             let packed = textureLoad(height_x, vec2<i32>(id.xy), i32(layer), 0);
-            let z = textureLoad(z_field, vec2<i32>(id.xy), i32(layer), 0).x;
             let octave_fraction = (f32(bin) + 0.5) / f32(bins);
             let minimum = 0.5 * cascade.max_wavelength;
             let maximum = select(cascade.max_wavelength, coverage / 4.0,
@@ -96,9 +94,9 @@ fn resolve(@builtin(global_invocation_id) id: vec3<u32>) {
             let shoaling = shoaling_weights(depth, wave_number);
             let attenuation = mix(vec2(1.0), shoaling, fft.params.y);
             displacement += vec3(
-                packed.z * attenuation.x,
+                packed.y * attenuation.x,
                 packed.x * attenuation.y,
-                z * attenuation.x,
+                packed.z * attenuation.x,
             ) * normalization;
         }
     }

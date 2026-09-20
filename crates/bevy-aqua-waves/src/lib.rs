@@ -44,6 +44,8 @@ impl Plugin for AquaWavesPlugin {
         embedded_asset!(app, "fft_evolve.wgsl");
         embedded_asset!(app, "fft_resolve.wgsl");
         embedded_asset!(app, "fft_surface.wgsl");
+        embedded_asset!(app, "fft_surface_filter.wgsl");
+        embedded_asset!(app, "fft_surface_residual.wgsl");
         // Surface module consumed by the composed cascade material.
         embedded_asset!(app, "displace.wgsl");
         let displace = app

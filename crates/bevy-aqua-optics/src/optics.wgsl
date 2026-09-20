@@ -8,8 +8,8 @@
     mesh_view_bindings::{globals, lights, view},
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
-#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, field_params, sample_field_level, invocation_extinction, invocation_scatter_scale, invocation_underwater_scatter_scale, invocation_scatter_tint, invocation_scattering_asymmetry, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, surface}
-#import aqua::waves::displace::{WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, detail_normal_sample}
+#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, field_params, sample_field_level, invocation_extinction, invocation_scatter_scale, invocation_underwater_scatter_scale, invocation_scatter_tint, invocation_scattering_asymmetry, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, uses_filtered_spectral_surface, get_spectral_filtered_variance, surface}
+#import aqua::waves::displace::{CAPILLARY_RESOLVED_ENERGY, WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, detail_normal_sample}
 #import aqua::foam::shade::{sample_foam_density}
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
 #import aqua::light::incident::{GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, safe_normalize, smith_masking_shadowing, strongest_incident_directional_light}
@@ -31,12 +31,17 @@ fn unresolved_wave_roughness(
     lod_alpha: f32,
     near_detail_weight: f32,
     filtered_detail_variance: f32,
+    filtered_capillary_variance: f32,
 ) -> f32 {
     let footprint = screen_xz_footprint();
     let unresolved_wavelength = 2.0 * footprint;
     var unresolved_variance = 0.0;
     let spectral = surface.reflection.x > 0.5;
-    let band_count = select(5u, 8u, spectral);
+    var band_count = select(5u, 8u, spectral);
+    if spectral && uses_filtered_spectral_surface() {
+        unresolved_variance = get_spectral_filtered_variance();
+        band_count = 0u;
+    }
     for (var band = 0u; band < band_count; band++) {
         let cascade = cascade_layout.cascades[min(band, 4u)];
         var maximum_wavelength = cascade.max_wavelength;
@@ -58,9 +63,8 @@ fn unresolved_wave_roughness(
         unresolved_variance += unresolved_fraction * band_variance;
     }
 
-    let lod_blend_energy = 2.0 * (
-        (1.0 - lod_alpha) * (1.0 - lod_alpha) + lod_alpha * lod_alpha
-    );
+    // Two fixed-world independent detail fields; no geometry-LOD energy pulse.
+    let lod_blend_energy = 2.0;
     let ripple = invocation_ripple();
     let detail_variance = WAVE_NORMALS_SLOPE_VARIANCE
         * lod_blend_energy
@@ -75,8 +79,12 @@ fn unresolved_wave_roughness(
     let capillary_resolved = capillary_resolved_weight(world_xz);
     let capillary_variance = WAVE_NORMALS_SLOPE_VARIANCE
         * surface.capillary.y * surface.capillary.y * ripple * ripple;
+    let capillary_resolved_energy = near_energy
+        * capillary_resolved * capillary_resolved;
     unresolved_variance += capillary_variance
-        * (1.0 - near_energy * capillary_resolved * capillary_resolved);
+        * (1.0 - capillary_resolved_energy * CAPILLARY_RESOLVED_ENERGY)
+        + min(filtered_capillary_variance, capillary_resolved_energy
+            * CAPILLARY_RESOLVED_ENERGY * capillary_variance);
 
     // Geometric wave slopes retain unit strength; only detail terms fade.
     var slope_variance = unresolved_variance;
@@ -130,6 +138,7 @@ fn far_field_water(
         in.sample_data.y,
         near.near_detail_weight,
         near.filtered_detail_variance,
+        near.filtered_capillary_variance,
     );
     let reflection = reflect(-to_view, lighting_normal);
     var reflected_radiance = sample_environment(
@@ -313,6 +322,7 @@ fn resolve_near_surface(
 ) -> NearSurface {
     var normal = geometric_normal;
     var filtered_detail_variance = 0.0;
+    var filtered_capillary_variance = 0.0;
     if mode >= DEBUG_MODE_BEAUTY {
         let near_weight = 1.0 - far_tier;
         var resolved_slope = normal.xz / max(normal.y, MIN_NORMAL_Y);
@@ -327,8 +337,14 @@ fn resolve_near_surface(
             );
             resolved_slope += near_weight * detail.xy;
             filtered_detail_variance = near_weight * near_weight * detail.z;
-            resolved_slope += near_weight * capillary_normal_slope(in.undisplaced_xz, invocation_ripple())
-                * capillary_resolved_weight(in.undisplaced_xz);
+            let capillary = capillary_normal_slope(
+                in.undisplaced_xz,
+                invocation_ripple(),
+            );
+            let capillary_weight = capillary_resolved_weight(in.undisplaced_xz);
+            resolved_slope += near_weight * capillary.xy * capillary_weight;
+            filtered_capillary_variance = near_weight * near_weight
+                * capillary_weight * capillary_weight * capillary.z;
         }
         normal = safe_normalize(
             vec3(resolved_slope.x, 1.0, resolved_slope.y),
@@ -347,6 +363,7 @@ fn resolve_near_surface(
         lighting_distance,
         1.0 - far_tier,
         filtered_detail_variance,
+        filtered_capillary_variance,
     );
 }
 
@@ -681,6 +698,7 @@ fn shade_underside(
         in.sample_data.y,
         near.near_detail_weight,
         near.filtered_detail_variance,
+        near.filtered_capillary_variance,
     );
     // A reflected water-side ray cannot sample the air environment probe.
     // Evaluate the homogeneous open-path medium in the local facet frame.

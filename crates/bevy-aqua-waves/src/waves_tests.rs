@@ -53,7 +53,7 @@ fn displacement_bounds_follow_active_wave_source() {
 }
 
 #[test]
-fn gerstner_signs_match_crest() {
+fn gerstner_positive_direction_is_travel_direction() {
     let mut wave = generate_components(1.0, 0.0)[0];
     wave.direction = Vec2::X;
     wave.amplitude = 2.0;
@@ -64,7 +64,7 @@ fn gerstner_signs_match_crest() {
 
     assert_eq!(displacement(wave, Vec2::ZERO, 0.0), Vec3::Y * 2.0);
     let quarter_phase = displacement(wave, Vec2::ZERO, TAU / 4.0);
-    assert!((quarter_phase - Vec3::new(-3.2, 0.0, 0.0)).length() < 0.000_001);
+    assert!((quarter_phase - Vec3::new(3.2, 0.0, 0.0)).length() < 0.000_001);
 }
 
 #[test]
@@ -106,8 +106,8 @@ fn fft_spectrum_density_is_rotation_invariant() {
     const RESOLUTION: u32 = lod::RESOLUTION;
     // Wave vector (60, 80) * delta_k sits inside cascade zero's band
     // (wavelength 0.96 m). A minus-quarter-turn wind must evaluate that
-    // bin exactly like the pre-rotated vector (80, -60) * delta_k with
-    // no wind; allow float slack for the rotation itself.
+    // travelling bin exactly like (-80, 60) * delta_k with no wind.
+    // This sign makes authored wind headings actual travel headings.
     let turned = spectral_bin(
         RESOLUTION,
         spec,
@@ -121,11 +121,11 @@ fn fft_spectrum_density_is_rotation_invariant() {
     let plain = spectral_bin(
         RESOLUTION,
         spec,
-        80 + (RESOLUTION - 60) * RESOLUTION,
+        (RESOLUTION - 80) + 60 * RESOLUTION,
         &SpectrumAuthoring::default(),
     )
     .expect("bin active");
-    assert_eq!(turned.k_length, plain.k_length);
+    assert!((turned.k_length - plain.k_length).abs() < 1e-5);
     let scale = plain.raw_variance.abs().max(f32::MIN_POSITIVE);
     assert!((turned.raw_variance - plain.raw_variance).abs() / scale < 1e-4);
 }
@@ -162,9 +162,8 @@ fn uniform_flow_abi_matches_wgsl_declaration() {
 }
 
 fn displacement(wave: Component, position: Vec2, time: f32) -> Vec3 {
-    let angle = wave.wave_number * wave.direction.dot(position)
-        + wave.phase
-        + wave.angular_frequency * time;
+    let angle = wave.wave_number * wave.direction.dot(position) + wave.phase
+        - wave.angular_frequency * time;
     let horizontal = wave.chop_amplitude * angle.sin();
     Vec3::new(
         horizontal * wave.direction.x,
@@ -208,4 +207,249 @@ fn sea_state_scales_both_backends_without_changing_bands() {
         assert!((calm / moderate - 0.5).abs() < 1e-5);
         assert!((rough / moderate - 1.5).abs() < 1e-5);
     }
+}
+
+#[test]
+fn decorative_surface_detail_is_coherent_and_decorrelated() {
+    let shader = include_str!("displace.wgsl");
+    assert!(shader.contains(
+        "flow_frame(advected_xz - heading_frame(DETAIL_TRAVEL_0) * globals.time * speed)"
+    ));
+    assert!(shader.contains(
+        "flow_frame(advected_xz - heading_frame(DETAIL_TRAVEL_1) * globals.time * speed)"
+    ));
+    assert!(shader.contains("DETAIL_B_ROTATION"));
+    assert!(shader.contains("DETAIL_B_SCALE: f32 = 1.41421356"));
+    assert!(shader.contains("CAPILLARY_RESOLVED_STRENGTH: f32 = 0.45"));
+    assert!(shader.contains("CAPILLARY_RESOLVED_ENERGY: f32"));
+    assert!(shader.contains("0.70710678 * (sample_a.xy + sample_b.xy)"));
+    assert!(shader.contains("0.5 * (sample_a.z + sample_b.z)"));
+    assert!(!shader.contains("CAPILLARY_A_SCALE * base_stretch,\n    ).xy"));
+    assert!(shader.contains("flow_frame(\n        advected_world(world_xz) - direction"));
+    assert!(!shader.contains("NORMAL_DIRECTION_1: vec2<f32> = vec2(-0.85, -0.53)"));
+}
+
+#[test]
+fn river_frame_transforms_world_heading_before_detail_sampling() {
+    fn river_frame(point: Vec2, flow: Vec2) -> Vec2 {
+        let speed = flow.length();
+        let direction = flow / speed;
+        Vec2::new(
+            direction.dot(point) / (1.0 + 0.55 * speed.min(4.5)),
+            Vec2::new(-direction.y, direction.x).dot(point) * 1.35,
+        )
+    }
+
+    let point = Vec2::new(13.0, -7.0);
+    let flow = Vec2::new(-0.8, 1.6);
+    let heading = Vec2::new(0.91, 0.41).normalize();
+    let world_step = 0.37 * heading;
+    let actual = river_frame(point - world_step, flow) - river_frame(point, flow);
+    let direction = flow.normalize();
+    let expected = Vec2::new(
+        -direction.dot(world_step) / (1.0 + 0.55 * flow.length().min(4.5)),
+        -Vec2::new(-direction.y, direction.x).dot(world_step) * 1.35,
+    );
+    assert!((actual - expected).length() < 1e-6);
+
+    let shader = include_str!("displace.wgsl");
+    let motion = "flow_frame(advected_xz - heading_frame(DETAIL_TRAVEL_0) * globals.time * speed)";
+    assert!(shader.contains(motion));
+    assert!(!shader.contains("flow_frame(advected_xz) - direction_a"));
+}
+
+#[test]
+fn exclusive_filter_is_bounded_and_leaves_geometry_unchanged() {
+    let image = lod::make_fft_surface_texture();
+    assert_eq!(image.texture_descriptor.mip_level_count, 9);
+    assert_eq!(image.texture_descriptor.size.depth_or_array_layers, 25);
+    assert!(image.data.is_none());
+    let shader = include_str!("displace.wgsl");
+    assert!(shader.contains("let layer = i32(lod_count() + 2u * field)"));
+    assert!(shader.contains("let uv = fract(world_to_uv(advected_world(world_xz), cascade))"));
+    assert!(shader.contains("textureNumLevels(fft_surface) - 1u"));
+    let material = include_str!("../../bevy-aqua-core/src/cascade/material.wgsl");
+    assert!(material.contains("if !bounded && surface.reflection.x > 0.5"));
+    assert!(material.contains("length(dpdx(in.undisplaced_xz))"));
+    assert!(material.contains("length(dpdy(in.undisplaced_xz))"));
+    assert!(
+        material.find("return shade_underside").unwrap()
+            < material
+                .find("filtered_fft_normal(in.undisplaced_xz,")
+                .unwrap()
+    );
+    let deformation = include_str!("../../bevy-aqua-core/src/cascade/deform.wgsl");
+    assert!(!deformation.contains("filtered_fft_normal"));
+    let render = include_str!("render.rs");
+    assert!(render.contains("LOD_COUNT as u32 + 2 * (4 + frame.fft_bins)"));
+    assert!(render.contains("SURFACE_MIPS.iter().enumerate()"));
+    let bytes: u32 = (0..=8).map(|m| (256u32 >> m).pow(2) * 25 * 8).sum();
+    assert_eq!(bytes, 17_476_200);
+    assert_eq!(5 + 2 * (4 + 1), 15);
+    assert_eq!(5 + 2 * (4 + 4) + 4, 25);
+}
+
+#[test]
+fn dense_mip_filter_preserves_constants_and_removes_nyquist() {
+    let mean = |v: [f32; 4]| v.into_iter().sum::<f32>() * 0.25;
+    assert_eq!(mean([0.3; 4]), 0.3);
+    assert_eq!(mean([1.0, -1.0, -1.0, 1.0]), 0.0);
+    let mip_texels: u32 = (1..=8).map(|mip| (lod::RESOLUTION >> mip).pow(2)).sum();
+    assert_eq!(mip_texels, 21_845);
+    assert!(mip_texels < lod::RESOLUTION.pow(2) / 3 + 1);
+    let shader = include_str!("fft_surface_filter.wgsl");
+    assert_eq!(shader.matches("textureLoad(source,").count(), 4);
+    assert!(shader.contains("0.25 *"));
+}
+
+#[test]
+fn decorative_frequency_and_energy_do_not_follow_mesh_lod() {
+    let shader = include_str!("displace.wgsl");
+    let start = shader.find("fn detail_normal_sample(").unwrap();
+    let body = &shader[start..shader[start..].find("// GodotOceanWaves").unwrap() + start];
+    assert!(body.contains("cascade_layout.cascades[0u]"));
+    assert_eq!(body.matches("transformed_detail_normal(").count(), 2);
+    assert!(!body.contains("mix(near, far"));
+    let optics = include_str!("../../bevy-aqua-optics/src/optics.wgsl");
+    assert!(optics.contains("let lod_blend_energy = 2.0;"));
+}
+
+#[test]
+fn exclusive_derivatives_never_repeat_shoaling() {
+    let shader = include_str!("fft_surface.wgsl");
+    let begin = shader.find("fn spectral_displacement(").unwrap();
+    let end = shader[begin..].find("@compute").unwrap() + begin;
+    let body = &shader[begin..end];
+    assert!(body.contains("textureLoad(height_x"));
+    assert!(body.contains("textureLoad(z_field"));
+    assert!(!body.contains("bed_range"));
+    assert!(shader.contains("let field = id.z - LOD_COUNT"));
+    assert!(shader.contains("% vec2(i32(FFT_RESOLUTION))"));
+    assert!(shader.contains("vec4(dx, dx.y * dx.y)"));
+    assert!(shader.contains("vec4(dz, dz.y * dz.y)"));
+    let shade = include_str!("displace.wgsl");
+    assert!(shade.contains("spectral_depth_weights(water_depth, sqrt(minimum * maximum))"));
+    assert!(shade.contains("let shallow = (1.0 - smoothstep(4.0, 6.0, water_depth))"));
+    assert!(shade.contains("small.z * local_outer.z"));
+    assert!(shade.contains("i32(21u + field)"));
+    assert!(shade.contains("2.0 * exp2(level) / cascade.texture_res"));
+    assert!(!shade.contains("exp2(ceil(level))"));
+}
+
+#[test]
+fn moment_filter_transfers_only_removed_slope_energy() {
+    for samples in [[-0.4_f32, 0.1, 0.2, 0.5], [0.3; 4], [-1.0, 1.0, -1.0, 1.0]] {
+        let mean = samples.into_iter().sum::<f32>() * 0.25;
+        let second = samples.into_iter().map(|x| x * x).sum::<f32>() * 0.25;
+        for retained in [0.0_f32, 0.2, 0.5, 1.0] {
+            let resolved = retained * retained * mean * mean;
+            let missing = (second - resolved).max(0.0);
+            assert!((resolved + missing - second).abs() < 1e-7);
+        }
+    }
+    let optics = include_str!("../../bevy-aqua-optics/src/optics.wgsl");
+    assert!(optics.contains("unresolved_variance = get_spectral_filtered_variance()"));
+    assert!(optics.contains("band_count = 0u"));
+    assert!(!optics.contains("spectral_band_resolved_weight"));
+    let shader = include_str!("displace.wgsl");
+    let base = &shader[shader.find("fn filtered_fft_normal(").unwrap()
+        ..shader
+            .find("// Preserve the producer's accurate local short-wave")
+            .unwrap()];
+    let band_loop = &base[base.find("for (var field = 0u;").unwrap()..];
+    assert!(!band_loop.contains("lod_alpha("));
+    assert!(!base.contains("array<vec3<f32>"));
+    assert!(base.contains("derivative_x += resolved_dx"));
+    assert!(base.contains("max(dx.w + dz.w - resolved_energy, 0.0)"));
+}
+
+#[test]
+fn sum_derivatives_before_forming_the_surface_normal() {
+    let dx = [Vec3::new(0.1, 0.2, -0.1), Vec3::new(-0.05, -0.1, 0.02)];
+    let dz = [Vec3::new(-0.1, 0.05, 0.1), Vec3::new(0.02, 0.1, -0.03)];
+    let sum_dx: Vec3 = dx.into_iter().sum();
+    let sum_dz: Vec3 = dz.into_iter().sum();
+    let n = (Vec3::Z + sum_dz).cross(Vec3::X + sum_dx);
+    assert!((n - Vec3::new(-0.119, 1.1171, -0.1655)).length() < 1e-5);
+}
+
+#[test]
+fn packed_real_ifft_preserves_displacement_and_analytic_derivatives() {
+    // Independent DFT reference: two Hermitian spectra share one complex IFFT.
+    let n = 32usize;
+    let mut height = vec![Vec2::ZERO; n];
+    height[3] = Vec2::new(0.3, -0.2);
+    height[n - 3] = Vec2::new(0.3, 0.2);
+    let mut derivative = vec![Vec2::ZERO; n];
+    for k in 0..n {
+        let signed = if k < n / 2 {
+            k as f32
+        } else {
+            k as f32 - n as f32
+        };
+        let wave_number = signed * std::f32::consts::TAU / n as f32;
+        derivative[k] = wave_number * Vec2::new(-height[k].y, height[k].x);
+    }
+    let inverse_at = |field: &[Vec2], x: usize| -> Vec2 {
+        field
+            .iter()
+            .enumerate()
+            .map(|(k, h)| {
+                let phase = std::f32::consts::TAU * (k * x) as f32 / n as f32;
+                Vec2::new(
+                    h.x * phase.cos() - h.y * phase.sin(),
+                    h.x * phase.sin() + h.y * phase.cos(),
+                )
+            })
+            .sum::<Vec2>()
+            / n as f32
+    };
+    let packed: Vec<_> = height
+        .iter()
+        .zip(&derivative)
+        .map(|(a, b)| *a + Vec2::new(-b.y, b.x))
+        .collect();
+    for x in 0..n {
+        let both = inverse_at(&packed, x);
+        assert!((both.x - inverse_at(&height, x).x).abs() < 1e-6);
+        assert!((both.y - inverse_at(&derivative, x).x).abs() < 1e-6);
+    }
+    let resolve = include_str!("fft_resolve.wgsl");
+    assert!(resolve.contains("vec3(packed.y, packed.x, packed.z) * normalization"));
+    let surface = include_str!("fft_surface.wgsl");
+    let overwrite = &surface[surface.find("fn resolve_analytic(").unwrap()
+        ..surface.find("fn resolve_surface(").unwrap()];
+    assert!(!overwrite.contains("textureStore(displacement"));
+    assert!(surface.contains("LOD_COUNT + 2u * field"));
+    assert!(surface.contains("vec3(b.y, a.w, b.z)"));
+    assert!(surface.contains("vec3(b.z, b.x, b.w)"));
+}
+
+#[test]
+fn shallow_residual_is_staged_before_analytic_overwrite_and_mips() {
+    let render = include_str!("render.rs");
+    let execution = &render[render
+        .find("fn fft_spans(")
+        .unwrap_or_else(|| render.find("fn fft_spans<").unwrap())..];
+    let residual = execution
+        .find("\"aqua_surface_shallow_prediction\"")
+        .unwrap();
+    let analytic = execution
+        .find("\"aqua_surface_analytic_overwrite\"")
+        .unwrap();
+    let mips = execution.find("for (index, key) in SURFACE_MIPS").unwrap();
+    assert!(residual < analytic && analytic < mips);
+    assert!(
+        execution[..residual]
+            .rfind("if frame.fft_bins > 1 {")
+            .is_some()
+    );
+    assert!(render.contains("array_layer_count: Some(21)"));
+    assert!(render.contains("base_array_layer: 21"));
+    assert!(render.contains("array_layer_count: Some(4)"));
+    let shader = include_str!("fft_surface_residual.wgsl");
+    assert!(shader.contains("vec4(increment, curvature)"));
+    assert!(shader.contains("vec4(-60000.0), vec4(60000.0)"));
+    assert!(shader.contains("bed_water_depth(world)"));
+    assert!(!shader.contains("fract(uv)"));
 }

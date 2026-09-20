@@ -314,3 +314,42 @@ fn shoreline_depth_keeps_dry_bed_signed_until_wave_height_is_added() {
     assert!(signed_depth(0.0, -0.4, -0.6) < 0.0); // exposed by trough
     assert_eq!(signed_depth(0.0, 0.4, 0.4), 0.0);
 }
+
+#[test]
+fn visible_foam_patterns_follow_dominant_wave_heading() {
+    let shader = include_str!("shade.wgsl");
+    assert!(shader.contains("-surface.advection.zw * globals.time / 10.0"));
+    assert!(shader.contains("- 0.5 * globals.time * surface.advection.zw"));
+    assert!(!shader.contains("let wind_direction = vec2(0.866, 0.5)"));
+}
+
+#[test]
+fn breakup_is_world_stationary_and_has_no_crossfade_coverage_trough() {
+    let shader = include_str!("shade.wgsl");
+    let start = shader.find("fn surface_foam_mask(").unwrap();
+    let end = shader[start..].find("// Add elongated").unwrap() + start;
+    let body = &shader[start..end];
+    assert!(body.contains("cascade_layout.cascades[0u]"));
+    assert!(!body.contains("mix(near, far, alpha)"));
+    assert!(!body.contains("cascade_layout.cascades[lod]"));
+    assert!(!body.contains("capillary_resolved_weight"));
+    assert!(body.contains("pattern *= fine_modulation"));
+    assert!(body.contains("screen_texture_lod(texture_scale / 1.25"));
+    // Same near-field coverage curve; geometry LOD no longer enters it.
+    let coverage = |p: f32| {
+        let x = ((p - 0.6) / 0.4).clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    };
+    let mean_endpoints = 0.5 * (coverage(0.9) + coverage(0.2));
+    let wrong_crossfade = coverage(0.5 * (0.9 + 0.2));
+    assert!(wrong_crossfade < 0.01);
+    assert!(mean_endpoints > 0.4);
+    for _lod in 0..5 {
+        for _alpha in [0.0, 0.5, 1.0] {
+            assert_eq!(0.5 * (coverage(0.9) + coverage(0.2)), mean_endpoints);
+        }
+    }
+    let bubbles = &shader[shader.find("fn foam_bubble_colour(").unwrap()..];
+    assert!(bubbles.contains("cascade_layout.cascades[0u]"));
+    assert!(!bubbles.contains("mix(smaller_sample, bigger_sample, alpha)"));
+}
