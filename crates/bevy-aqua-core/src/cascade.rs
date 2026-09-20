@@ -7,12 +7,15 @@ use bevy::{
         CompressedImageFormats, ImageAddressMode, ImageFilterMode, ImageSampler,
         ImageSamplerDescriptor, ImageType,
     },
+    mesh::MeshVertexBufferLayoutRef,
+    pbr::{MaterialPipeline, MaterialPipelineKey},
     prelude::*,
     render::render_resource::{
-        AsBindGroup, Extent3d, ShaderType, TextureDimension, TextureFormat, TextureUsages,
-        TextureViewDescriptor, TextureViewDimension,
+        AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+        TextureDimension, TextureFormat, TextureUsages, TextureViewDescriptor,
+        TextureViewDimension,
     },
-    shader::ShaderRef,
+    shader::{ShaderDefVal, ShaderRef},
 };
 
 use crate::fields::FieldParams;
@@ -190,6 +193,24 @@ impl Material for CascadeMaterial {
     fn reads_view_transmission_texture(&self) -> bool {
         true
     }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        #[cfg(feature = "underwater")]
+        {
+            descriptor.primitive.cull_mode = None;
+            let underwater = ShaderDefVal::Bool("UNDERWATER".into(), true);
+            descriptor.vertex.shader_defs.push(underwater.clone());
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push(underwater);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Per-body extent parameters for localized water. Ocean tiles carry the
@@ -210,8 +231,10 @@ pub struct BodyParams {
     /// profile; w: optics enable flag. Fresh-water bodies author low
     /// extinction so the bed shows through.
     optics_a: Vec4,
-    /// x: scatter-endpoint scale; y: direct-light roughness; zw reserved.
+    /// x: scatter-endpoint scale; y: direct-light roughness; w: HG asymmetry.
     optics_b: Vec4,
+    /// rgb: medium scatter tint; w reserved.
+    optics_c: Vec4,
 }
 
 impl BodyParams {
@@ -224,6 +247,7 @@ impl BodyParams {
             aabb_size: Vec4::ZERO,
             optics_a: Vec4::ZERO,
             optics_b: Vec4::ZERO,
+            optics_c: Vec4::ZERO,
         }
     }
 
@@ -236,14 +260,16 @@ impl BodyParams {
         has_flow: bool,
         optics: Option<BodyOptics>,
     ) -> Self {
-        let (extinction, scale, roughness, enabled) = match optics {
+        let (extinction, scale, tint, roughness, asymmetry, enabled) = match optics {
             Some(optics) => (
                 optics.extinction,
                 optics.scatter_scale,
+                optics.scatter_tint,
                 optics.sun_roughness,
+                optics.scattering_asymmetry,
                 1.0,
             ),
-            None => (Vec3::ZERO, 1.0, -1.0, 0.0),
+            None => (Vec3::ZERO, 1.0, Vec3::ONE, -1.0, 0.8, 0.0),
         };
         Self {
             flags: Vec4::new(1.0, if has_flow { 1.0 } else { 0.0 }, 0.0, 0.0),
@@ -251,7 +277,8 @@ impl BodyParams {
             aabb_min: Vec4::new(aabb_min.x, aabb_min.y, 0.0, 0.0),
             aabb_size: Vec4::new(aabb_size.x, aabb_size.y, 0.0, 0.0),
             optics_a: Vec4::new(extinction.x, extinction.y, extinction.z, enabled),
-            optics_b: Vec4::new(scale, roughness, 0.0, 0.0),
+            optics_b: Vec4::new(scale, roughness, 0.0, asymmetry),
+            optics_c: Vec4::new(tint.x, tint.y, tint.z, 0.0),
         }
     }
 }
@@ -265,6 +292,10 @@ pub struct BodyOptics {
     pub extinction: Vec3,
     /// Multiplier on the volume-scatter endpoint.
     pub scatter_scale: f32,
+    /// Particle-scatter chromaticity.
+    pub scatter_tint: Vec3,
+    /// Henyey-Greenstein asymmetry.
+    pub scattering_asymmetry: f32,
     /// Direct-light lobe roughness; negative inherits the ocean value.
     pub sun_roughness: f32,
 }
@@ -292,13 +323,15 @@ pub struct SurfaceParams {
     /// x: mode, y: shader-property refraction strength, z: debug range,
     /// w: unused padding.
     pub debug: Vec4,
-    /// rgb: ocean Beer-Lambert extinction per channel; w reserved.
+    /// rgb: ocean Beer-Lambert extinction per channel; w: scatter scale.
     pub fog_density: Vec4,
     /// x: maximum sampled depth; y: debug range; z: waterline fade depth;
     /// w: direct-sun visibility. Depths are metres.
     pub sea_floor: Vec4,
     /// Sunlit subsurface scattering tint (rgb); w reserved.
     pub sss_tint: Vec4,
+    /// Underwater particle scatter tint (rgb) and HG asymmetry (w).
+    pub medium_scatter: Vec4,
     /// SSS pedestal, strength, and range; w reserved.
     pub sss: Vec4,
     /// Detail normals: scale, strength, and overall strength; w reserved.
@@ -329,8 +362,9 @@ impl SurfaceParams {
         self.grazing_color = optics.grazing_color.extend(1.0);
         // Alpha is the metric depth at which coastal scatter reaches deep water.
         self.shallow_color = optics.shallow_color.extend(7.0);
-        self.fog_density = optics.extinction.extend(0.0);
+        self.fog_density = optics.extinction.extend(optics.scatter_scale);
         self.sss_tint = optics.sss_tint.extend(0.0);
+        self.medium_scatter = optics.scatter_tint.extend(optics.scattering_asymmetry);
     }
 }
 
@@ -352,11 +386,12 @@ impl Default for SurfaceParams {
             // Shipped `Ocean.mat:145` uses strength 1.0; Aqua retains 0.5 for the accepted view.
             debug: Vec4::new(0.0, 0.5, 32.0, 0.0),
             // Shader-property extinction (`Ocean.shader:146`); Ocean.mat:185 differs.
-            fog_density: Vec4::new(0.9, 0.3, 0.35, 0.0),
+            fog_density: Vec4::new(0.9, 0.3, 0.35, 1.0),
             // Maximum depth, debug range, waterline fade, direct-sun visibility.
             sea_floor: Vec4::new(32.0, 10.0, 1.0, 0.0),
             // Shader-property SSS (`Ocean.shader:48,50-54`); Ocean.mat:156,164-165,195 differs.
             sss_tint: Vec4::new(0.088_506_84, 0.497, 0.456_150_74, 0.0),
+            medium_scatter: Vec4::new(1.0, 1.0, 1.0, 0.8),
             sss: Vec4::new(0.0, 1.7, 5.0, 1.0),
             // Crest normal-map scale, strength, overall strength, and reserved.
             detail: Vec4::new(40.0, 0.08, 1.0, 1.0),

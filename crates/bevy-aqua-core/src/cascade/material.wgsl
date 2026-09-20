@@ -18,7 +18,7 @@
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
 
-#import aqua::cascade::{CREST_SSS_RANGE, CREST_SSS_UNCOMPRESSED, DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_FAR_TIER, DEBUG_MODE_FOAM, DEBUG_MODE_LIGHT_RADIANCE, DEBUG_MODE_REFLECTION, DEBUG_MODE_REFLECTION_FRACTION, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, DEBUG_MODE_WAVE_HEIGHT, LUMINANCE_EPSILON, LocalLightSample, MIN_NORMAL_Y, SAFE_LENGTH_SQUARED, advected_world, begin_invocation, capillary_resolved_weight, cascade_layout, effective_flow, far_tier_weight, field_params, godot_fresnel, invocation_extinction, invocation_ripple, invocation_river_state, invocation_scatter_scale, lod_count, owning_body, sample_displacement, sample_field_flow, sample_field_level, sample_planar_reflection, set_body_optics, set_effective_flow, set_effective_time, set_fragment_river, set_river_ripple, set_xz_footprint, snap_and_transition, invocation_sun_roughness, surface}
+#import aqua::cascade::{CREST_SSS_RANGE, CREST_SSS_UNCOMPRESSED, DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_FAR_TIER, DEBUG_MODE_FOAM, DEBUG_MODE_LIGHT_RADIANCE, DEBUG_MODE_REFLECTION, DEBUG_MODE_REFLECTION_FRACTION, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, DEBUG_MODE_WAVE_HEIGHT, LUMINANCE_EPSILON, LocalLightSample, MIN_NORMAL_Y, SAFE_LENGTH_SQUARED, advected_world, begin_invocation, capillary_resolved_weight, cascade_layout, effective_flow, far_tier_weight, field_params, godot_fresnel, invocation_extinction, invocation_ripple, invocation_scatter_tint, invocation_scattering_asymmetry, invocation_river_state, invocation_scatter_scale, lod_count, owning_body, sample_displacement, sample_field_flow, sample_field_level, sample_planar_reflection, set_body_optics, set_effective_flow, set_effective_time, set_fragment_river, set_river_ripple, set_xz_footprint, snap_and_transition, invocation_sun_roughness, surface}
 
 #import aqua::waves::displace::{WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, crest_sss, detail_normal_sample, far_displacement, far_normal_cross, sample_fft_normal_cross}
 
@@ -30,6 +30,9 @@
 #import bevy_aqua_core::material::{BodyLightingState, CameraDepthDebug, CameraDepthPath, FoamState, LocalLightingState, MediumState, NearSurface, PrimaryLightState, SurfaceVertexOutput, TransmissionState}
 #import aqua::light::incident::{GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, local_light_contribution, resolve_primary_light, safe_normalize, sample_diffuse_environment, sample_environment, sample_local_light, smith_masking_shadowing, strongest_incident_directional_light, view_direction}
 #import aqua::optics::{camera_depth_path, deep_water_weight, empty_camera_depth_path, far_field_water, far_path_opaque, resolve_near_surface, resolve_transmission, sample_water_medium, unresolved_wave_roughness}
+#ifdef UNDERWATER
+#import aqua::optics::shade_underside
+#endif
 
 @vertex
 fn vertex(vertex: Vertex) -> SurfaceVertexOutput {
@@ -496,7 +499,10 @@ fn compose_water(
 }
 
 @fragment
-fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
+fn fragment(
+    in: SurfaceVertexOutput,
+    @builtin(front_facing) is_front: bool,
+) -> @location(0) vec4<f32> {
     // Position derivatives measure adjacent fragments in world XZ. Their
     // maximum length conservatively bounds metres per screen pixel for LOD.
     set_xz_footprint(max(
@@ -553,6 +559,9 @@ fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
     set_body_optics(
         select(surface.fog_density.rgb, params.optics_a.rgb, body_optics),
         select(1.0, params.optics_b.x, body_optics),
+        select(surface.fog_density.w, params.optics_b.x, body_optics),
+        select(surface.medium_scatter.rgb, params.optics_c.rgb, body_optics),
+        select(surface.medium_scatter.w, params.optics_b.w, body_optics),
     );
     // Discharge reads as roughness: faster narrows break up more, banks and
     // pools stay glassy. Bank fade eases the multiplier to zero at the edge.
@@ -568,6 +577,11 @@ fn fragment(in: SurfaceVertexOutput) -> @location(0) vec4<f32> {
     let surface_lod = u32(round(in.sample_data.x));
     let geometric_normal = safe_normalize(in.world_normal, vec3(0.0, 1.0, 0.0));
     let to_view = view_direction(in.world_position.xyz);
+#ifdef UNDERWATER
+    if !is_front {
+        return shade_underside(in, surface_lod, geometric_normal, to_view, mode);
+    }
+#endif
     let far_diagnostic = mode == DEBUG_MODE_FAR_TIER;
     var far_tier = select(
         0.0,

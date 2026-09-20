@@ -25,6 +25,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --lib
       - run: cargo check --examples
+      - run: cargo check --example underwater --features underwater
       - run: cargo package --workspace --no-verify
 
   wasm:
@@ -37,3 +38,4 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --target wasm32-unknown-unknown --examples
+      - run: cargo check --target wasm32-unknown-unknown --example underwater --features underwater

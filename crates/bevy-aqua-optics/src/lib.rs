@@ -16,10 +16,14 @@ struct ShaderLibraries {
 /// Registers and retains the layered Aqua lighting and optics modules.
 pub fn add_shader(app: &mut App) {
     bevy_aqua_light::add_shader(app);
+    embedded_asset!(app, "medium.wgsl");
     embedded_asset!(app, "optics.wgsl");
     let server = app.world().resource::<AssetServer>();
     app.insert_resource(ShaderLibraries {
-        _handles: vec![server.load("embedded://bevy_aqua_optics/optics.wgsl")],
+        _handles: vec![
+            server.load("embedded://bevy_aqua_optics/medium.wgsl"),
+            server.load("embedded://bevy_aqua_optics/optics.wgsl"),
+        ],
     });
 }
 
@@ -87,3 +91,6 @@ mod resolved_normal_tests;
 
 #[cfg(test)]
 mod caustic_receiver_tests;
+
+#[cfg(test)]
+mod medium_tests;

@@ -1,5 +1,63 @@
 # Migration notes (unreleased)
 
+## Underwater optics and opt-in rendering
+
+### ELI5 handoff
+
+1. **Two new knobs describe how light scatters underwater.**
+   `WaterOptics` now has `scatter_tint: Vec3` and
+   `scattering_asymmetry: f32`. In plain terms, the tint chooses the colour of
+   particle scatter and the asymmetry chooses how strongly it points along the
+   light direction. Shaders clamp asymmetry to `[-0.99, 0.99]`.
+
+2. **Hand-written `WaterOptics` and `BodyOptics` literals must add both fields.** This is a
+   source-breaking Rust struct change. To retain the shipped calibration, use
+   `scatter_tint: Vec3::ONE` and `scattering_asymmetry: 0.8`, or start from the
+   closest shipped preset with struct update syntax, for example
+   `WaterOptics { extinction: custom, ..WaterOptics::DEEP_OCEAN }`. Aqua's
+   `DEEP_OCEAN`, `COASTAL`, `TROPICAL`, and `CLEAR_FRESH` presets already carry
+   those values. `AquaSettings::default()` still selects `DEEP_OCEAN`; existing
+   code that uses presets or `AquaSettings::default()` needs no source edit.
+   For `BodyOptics` literals, add the two fields explicitly; the preset struct
+   update example above applies to `WaterOptics`.
+
+3. **Underwater rendering is off unless requested.** Enable Cargo feature
+   `underwater`; `AquaPlugin` then installs the fullscreen medium pass and
+   two-sided underside shading. Builds without the feature keep the previous
+   above-water culling and shader path. `UnderwaterSettings` is available only
+   with the feature, and its approximate opaque-receiver relighting defaults to
+   `false`.
+
+4. **The first integration has deliberate bounds.** It uses a homogeneous
+   horizontal mean-plane volume and one active Aqua view. It does not implement
+   a displaced per-pixel waterline, screen-space reflections, bounded-body side
+   clipping, or multi-camera Aqua rendering. Orthographic cameras safely skip
+   the volume composite. Multisampled depth is conservatively resolved, but its
+   native MSAA-off/default capture checks pass; other configurations and browser
+   runtime behavior remain unverified. See
+   [`docs/underwater.md`](docs/underwater.md) for the complete current bounds.
+
+### Underwater medium uniform ABI
+
+This integration expands Aqua's GPU uniform contracts, including feature-off
+builds.
+Code that mirrors these cross-crate types must update both Rust and WGSL:
+
+- `SurfaceParams::fog_density.w` now carries the authored ocean
+  `WaterOptics::scatter_scale` for underwater paths. Front-face ocean shading
+  deliberately retains its historical scale of `1.0`.
+- `SurfaceParams::medium_scatter: Vec4` is inserted after `sss_tint`; RGB stores
+  `scatter_tint` and W stores `scattering_asymmetry`. Its encoded size changes
+  from 304 to 320 bytes.
+- `BodyParams::optics_b.w` stores bounded-body `scattering_asymmetry`.
+- `BodyParams::optics_c: Vec4` is appended; RGB stores bounded-body
+  `scatter_tint` and W is reserved. The encoded `BodyParams` size therefore
+  changes from 96 to 112 bytes.
+
+Use Aqua's Rust types rather than reproducing offsets. The matching shader
+layout is `crates/bevy-aqua-core/src/cascade/common.wgsl`. No sampled texture or
+sampler binding is added.
+
 ## Spray admission and surface motion
 
 The `spray` feature remains opt-in. Its public Rust API does not change. These
