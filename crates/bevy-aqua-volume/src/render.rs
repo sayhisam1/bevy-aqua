@@ -27,7 +27,11 @@ use bevy::{
                 uniform_buffer,
             },
         },
-        renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery},
+        renderer::{
+            RenderAdapter, RenderAdapterInfo, RenderContext, RenderDevice, RenderQueue, ViewQuery,
+            WgpuWrapper,
+        },
+        settings::WgpuFeatures,
         view::{ExtractedView, ViewDepthTexture, ViewTarget},
     },
     shader::ShaderDefVal,
@@ -35,6 +39,24 @@ use bevy::{
 use bevy_aqua_core::{OceanView, pass};
 
 use super::ExtractedVolume;
+
+// Mirrors Bevy's SSR capability gate. Bevy keeps its helper crate-private.
+fn binding_arrays_are_usable(render_device: &RenderDevice, render_adapter: &RenderAdapter) -> bool {
+    let adapter_info = RenderAdapterInfo(WgpuWrapper::new(render_adapter.get_info()));
+    bevy::render::get_adreno_model(&adapter_info).is_none_or(|model| model > 610)
+        && render_device
+            .limits()
+            .max_binding_array_elements_per_shader_stage
+            >= 24
+        && render_device
+            .limits()
+            .max_binding_array_sampler_elements_per_shader_stage
+            >= 24
+        && render_device.features().contains(
+            WgpuFeatures::TEXTURE_BINDING_ARRAY
+                | WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
+        )
+}
 
 pub(super) fn add(app: &mut App) {
     let Some(render) = app.get_sub_app_mut(RenderApp) else {
@@ -67,6 +89,7 @@ struct VolumeUniform {
     scatter: Vec4,
     environment: Vec4,
     sea: Vec4,
+    interface_normal: Vec4,
 }
 
 #[derive(Resource)]
@@ -77,6 +100,7 @@ struct VolumePipeline {
     layout_msaa: BindGroupLayoutDescriptor,
     fullscreen_shader: FullscreenShader,
     fragment_shader: Handle<Shader>,
+    binding_arrays_are_usable: bool,
 }
 
 #[derive(Resource)]
@@ -90,6 +114,7 @@ impl VolumePipeline {
         mesh_view_layouts: MeshPipelineViewLayouts,
         fullscreen_shader: FullscreenShader,
         fragment_shader: Handle<Shader>,
+        binding_arrays_are_usable: bool,
     ) -> Self {
         let entries = BindGroupLayoutEntries::sequential(
             ShaderStages::FRAGMENT,
@@ -121,6 +146,7 @@ impl VolumePipeline {
             layout_msaa: BindGroupLayoutDescriptor::new("aqua_volume_layout_msaa", &entries_msaa),
             fullscreen_shader,
             fragment_shader,
+            binding_arrays_are_usable,
         }
     }
 }
@@ -128,6 +154,7 @@ impl VolumePipeline {
 fn init_pipeline(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
+    render_adapter: Res<RenderAdapter>,
     mesh_view_layouts: Res<MeshPipelineViewLayouts>,
     fullscreen_shader: Res<FullscreenShader>,
     asset_server: Res<AssetServer>,
@@ -138,6 +165,7 @@ fn init_pipeline(
         mesh_view_layouts.clone(),
         fullscreen_shader.clone(),
         fragment_shader,
+        binding_arrays_are_usable(&render_device, &render_adapter),
     ));
     commands.insert_resource(Prepared { uniform: None });
 }
@@ -167,13 +195,26 @@ impl SpecializedRenderPipeline for VolumePipeline {
         }
         if key
             .mesh_pipeline_view_key
+            .contains(MeshPipelineViewLayoutKey::ENVIRONMENT_MAP)
+        {
+            shader_defs.push(ShaderDefVal::from("ENVIRONMENT_MAP"));
+        }
+        if self.binding_arrays_are_usable {
+            shader_defs.push(ShaderDefVal::from("MULTIPLE_LIGHT_PROBES_IN_ARRAY"));
+        }
+        if key
+            .mesh_pipeline_view_key
             .contains(MeshPipelineViewLayoutKey::ATMOSPHERE)
         {
             shader_defs.push(ShaderDefVal::from("ATMOSPHERE"));
         }
         RenderPipelineDescriptor {
             label: Some("aqua_volume_pipeline".into()),
-            layout: vec![view_layout.main_layout, volume_layout],
+            layout: vec![
+                view_layout.main_layout,
+                view_layout.binding_array_layout,
+                volume_layout,
+            ],
             vertex: self.fullscreen_shader.to_vertex_state(),
             fragment: Some(FragmentState {
                 shader: self.fragment_shader.clone(),
@@ -234,10 +275,11 @@ fn volume_uniform(volume: &ExtractedVolume) -> VolumeUniform {
         environment: Vec4::new(
             volume.optics.scattering_asymmetry,
             if volume.receiver_relighting { 1.0 } else { 0.0 },
-            0.0,
+            if volume.unbounded_ocean { 1.0 } else { 0.0 },
             0.0,
         ),
         sea: Vec4::new(volume.surface_level, volume.camera_y, 0.0, 0.0),
+        interface_normal: volume.interface_normal.extend(0.0),
     }
 }
 
@@ -387,13 +429,15 @@ fn draw_volume(
     let pass_span = diagnostics.pass_span(&mut render_pass, "aqua_volume");
     render_pass.set_render_pipeline(gpu_pipeline);
     render_pass.set_bind_group(0, &view_bind_group.main, &view_bind_group.main_offsets);
-    render_pass.set_bind_group(1, bind_group, &[]);
+    render_pass.set_bind_group(1, &view_bind_group.binding_array, &[]);
+    render_pass.set_bind_group(2, bind_group, &[]);
     render_pass.draw(0..3, 0..1);
     pass_span.end(&mut render_pass);
 }
 
 #[cfg(test)]
 mod tests {
+    use bevy::prelude::Vec3;
     #[test]
     fn fullscreen_copy_initializes_ping_pong_destination() {
         let source = include_str!("render.rs");
@@ -416,7 +460,68 @@ mod tests {
     #[test]
     fn upward_depth_hit_retains_displaced_surface_endpoint() {
         let shader = include_str!("volume.wgsl");
-        assert!(shader.contains("rd_world.y > 0.0 && raw_depth <= 0.0"));
+        assert!(shader.contains("dot(rd_world, facet_up) > 1e-6 && raw_depth <= 0.0"));
         assert!(!shader.contains("t_surface < t_scene"));
+    }
+
+    #[test]
+    fn local_tangent_exit_closes_sub_near_and_unbounded_ocean_gaps() {
+        fn local_exit(camera_y: f32, level: f32, ray: Vec3, normal: Vec3) -> f32 {
+            (level - camera_y) * normal.y / ray.dot(normal)
+        }
+        let normal = Vec3::new(0.0, 1.0, 1.0).normalize();
+        let near = 0.25;
+        let clipped = local_exit(-0.1, 0.0, Vec3::Y, normal);
+        let visible = local_exit(-1.0, 0.0, Vec3::Y, normal);
+        assert!(clipped > 0.0 && clipped <= near + 1e-4);
+        assert!(visible > near + 1e-4);
+
+        let shader = include_str!("volume.wgsl");
+        assert!(shader.contains("t_surface > 0.0"));
+        assert!(shader.contains("t_surface <= ray.near_distance + 1e-4"));
+        assert!(shader.contains("clipped_before_near || volume.environment.z > 0.5"));
+        assert!(shader.contains("raw_depth <= 0.0"));
+        assert!(shader.contains("dot(rd_world, facet_up) > 1e-6"));
+    }
+
+    #[test]
+    fn synthesized_boundary_matches_exact_underside_interface_physics() {
+        let shader = include_str!("volume.wgsl");
+        let boundary = shader
+            .split("fn terminal_underside_radiance(")
+            .nth(1)
+            .unwrap()
+            .split("@fragment")
+            .next()
+            .unwrap();
+        assert!(boundary.contains("refract(incident, water_normal, N_WATER)"));
+        assert!(boundary.contains("fresnel_water_to_air(cos_water)"));
+        assert!(boundary.contains("medium_radiance_oriented("));
+        assert!(boundary.contains("facet_up,"));
+        assert!(boundary.contains("sample_environment(transmitted_direction, facet_up, 0.0)"));
+        assert!(boundary.contains("N_WATER * N_WATER"));
+        let tir = boundary.find("if dot(transmitted_direction").unwrap();
+        let environment = boundary.find("sample_environment(").unwrap();
+        assert!(
+            tir < environment,
+            "TIR must return before environment sampling"
+        );
+        assert!(!boundary.contains("screen_texture"));
+        assert!(!boundary.contains("max(window"));
+    }
+
+    #[test]
+    fn environment_layout_uses_main_binding_array_and_volume_groups() {
+        let source = include_str!("render.rs");
+        let render = source.split("#[cfg(test)]").next().unwrap();
+        let shader = include_str!("volume.wgsl");
+        assert!(render.contains("view_layout.binding_array_layout"));
+        assert!(render.contains("layout: vec!["));
+        assert!(render.contains("MeshPipelineViewLayoutKey::ENVIRONMENT_MAP"));
+        assert!(render.contains("MULTIPLE_LIGHT_PROBES_IN_ARRAY"));
+        assert!(render.contains("binding_arrays_are_usable(&render_device, &render_adapter)"));
+        assert!(render.contains("set_bind_group(1, &view_bind_group.binding_array"));
+        assert!(render.contains("set_bind_group(2, bind_group"));
+        assert!(shader.contains("@group(2) @binding(0)"));
     }
 }

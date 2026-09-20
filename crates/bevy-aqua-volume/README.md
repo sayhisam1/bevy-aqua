@@ -1,7 +1,7 @@
 # bevy-aqua-volume
 
-Fullscreen underwater volume for Aqua. When the camera is below the local
-mean water level, a pass applies RGB Beer-Lambert transmittance and
+Fullscreen underwater volume for Aqua. When the camera is below its GPU-sampled local displaced
+water level, a pass applies RGB Beer-Lambert transmittance and
 closed-form in-scatter along the underwater segment. Particle scatter is a
 weak coefficient times `scatter_scale` and `scatter_tint`, plus molecular
 Rayleigh.
@@ -14,6 +14,9 @@ Directional lights are refracted at the surface, then fall off along
 Looking toward the sun is brighter via Henyey-Greenstein using
 `WaterOptics::scattering_asymmetry`.
 
-The pass runs whenever an `OceanView` camera is below the local mean water level.
+The pass automatically samples active `OceanView` cameras with `WaveQuery` and runs
+when the camera is below that local displaced level. GPU readback gives this camera
+sample roughly one frame of latency; an invalid initial sample conservatively uses the
+selected mean level.
 
 See `../../docs/underwater.md` for supported behavior and current bounds.

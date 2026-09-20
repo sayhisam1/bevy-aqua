@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 bevy-aqua-core.workspace = true
 bevy-aqua-optics.workspace = true
+bevy-aqua-query.workspace = true
 bevy = { workspace = true, features = [
     "bevy_asset",
     "bevy_core_pipeline",

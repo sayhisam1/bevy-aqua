@@ -12,7 +12,8 @@
 #import aqua::waves::displace::{WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, detail_normal_sample}
 #import aqua::foam::shade::{sample_foam_density}
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
-#import aqua::light::incident::{GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, safe_normalize, sample_diffuse_environment, sample_environment, smith_masking_shadowing, strongest_incident_directional_light}
+#import aqua::light::incident::{GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, safe_normalize, smith_masking_shadowing, strongest_incident_directional_light}
+#import aqua::light::environment::{sample_diffuse_environment, sample_environment}
 #import bevy_aqua_core::material::{CameraDepthDebug, CameraDepthPath, FoamState, MediumState, NearSurface, PrimaryLightState, SurfaceVertexOutput, TransmissionState}
 
 // A 2^-10 residual in the least-attenuated channel bounds body error to

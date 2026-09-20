@@ -19,7 +19,7 @@
 //!
 //! With the opt-in `underwater` feature, [`AquaPlugin`] adds the fullscreen
 //! medium pass and water-surface underside. See `docs/underwater.md` for its
-//! bounded mean-plane model.
+//! bounded local-sample model.
 //!
 //! With the `query` feature, add `WaveQuery` to floating entities to receive
 //! `WaveSurface` samples from the same cascades used for rendering.
@@ -81,6 +81,8 @@ impl Plugin for AquaPlugin {
         app.add_plugins(bevy_aqua_waves::AquaWavesPlugin);
         app.add_plugins(bevy_aqua_foam::AquaFoamPlugin);
         app.add_plugins(bevy_aqua_shore::AquaShorePlugin);
+        #[cfg(feature = "query")]
+        app.add_plugins(bevy_aqua_query::AquaQueryPlugin);
         #[cfg(feature = "underwater")]
         app.add_plugins(bevy_aqua_volume::AquaVolumePlugin);
         #[cfg(feature = "motion")]
@@ -95,8 +97,6 @@ impl Plugin for AquaPlugin {
             PostUpdate,
             ocean::prune.after(bevy_aqua_core::WaterBodiesResolved),
         );
-        #[cfg(feature = "query")]
-        app.add_plugins(bevy_aqua_query::AquaQueryPlugin);
         app.add_plugins(bevy::pbr::MaterialPlugin::<CascadeMaterial>::default())
             .init_resource::<AquaDebug>()
             .init_resource::<AquaSettings>()

@@ -165,9 +165,11 @@ default. The feature reuses `WaterOptics`; its new `scatter_tint` and
 `UnderwaterSettings::receiver_relighting` defaults to `false` because the
 optional approximation also attenuates emissive and local-light contributions.
 
-This first integration uses a homogeneous horizontal mean plane. It does not
-claim a displaced per-pixel waterline, screen-space reflections, bounded-body
-side clipping, or multi-camera support. Orthographic cameras skip the volume
+This first integration uses a homogeneous medium and a local camera wave sample
+with roughly one frame of GPU readback latency. It does not claim exact displaced
+per-pixel waterline closure, screen-space reflections, bounded-body side clipping,
+or multi-camera support. Near-plane crossings and fully folded wave geometry
+remain limited. Orthographic cameras skip the volume
 composite. Read [the underwater integration bounds](docs/underwater.md) before
 shipping it. The presence of the example and browser build configuration is not
 a claim of visual validation on every target.
