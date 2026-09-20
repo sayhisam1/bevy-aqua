@@ -22,11 +22,18 @@ model self-intersection or a second interface on fully folded wave geometry.
 
 ## Current bounds
 
-The volume is a homogeneous, horizontal mean-plane approximation with a 256 m
-path cap and directional-light single scattering. It does not claim per-pixel
-wave-crest waterline classification. A camera near a displaced crest can switch
-at the mean plane. Bounded bodies are selected by camera containment, but the
-fullscreen ray integration does not clip rays to side walls. An upward depth hit
+The volume is a homogeneous approximation with a 256 m path cap and
+directional-light single scattering. Wet/dry admission and the fallback surface
+plane use a local GPU `WaveQuery` sample at the active camera, with roughly one
+frame of readback latency. Before a valid sample arrives, admission conservatively
+uses the selected mean level. This is one camera sample, not exact per-pixel
+waterline closure. When a visible interface is clipped before the per-pixel near
+plane, the pass synthesizes an underside terminal from that sample's local tangent
+plane. The unbounded single-sheet ocean uses the same local plane to close upward
+no-depth gaps: every upward ray from a wet camera must eventually exit. Bounded
+bodies keep the stricter sub-near fallback because their open side walls need
+explicit lateral clipping. Fully folded waves and bounded-body side exits remain
+unsupported. An upward depth hit
 through a missing water-surface fragment cannot be identified as air-side geometry;
 preserving real displaced crest/trough hits takes priority, so that rare gap can
 be attenuated as water. Aqua currently maintains one active `OceanView`; the extracted medium belongs to that view.

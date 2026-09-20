@@ -1,5 +1,6 @@
 #import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
-#import aqua::medium::{medium_radiance, mesh_incident_transmittance, PATH_LENGTH_MAX}
+#import aqua::medium::{fresnel_water_to_air, medium_radiance, medium_radiance_oriented, mesh_incident_transmittance, N_WATER, PATH_LENGTH_MAX}
+#import aqua::light::environment::sample_environment
 #import bevy_pbr::mesh_view_bindings::view
 #import bevy_pbr::view_transformations::{
     frag_coord_to_ndc,
@@ -11,31 +12,72 @@ struct VolumeUniform {
     scatter: vec4<f32>,
     environment: vec4<f32>,
     sea: vec4<f32>,
+    interface_normal: vec4<f32>,
 }
 
 #ifdef MULTISAMPLED
-@group(1) @binding(0) var screen_texture: texture_2d<f32>;
-@group(1) @binding(1) var depth_texture: texture_depth_multisampled_2d;
+@group(2) @binding(0) var screen_texture: texture_2d<f32>;
+@group(2) @binding(1) var depth_texture: texture_depth_multisampled_2d;
 #else
-@group(1) @binding(0) var screen_texture: texture_2d<f32>;
-@group(1) @binding(1) var depth_texture: texture_depth_2d;
+@group(2) @binding(0) var screen_texture: texture_2d<f32>;
+@group(2) @binding(1) var depth_texture: texture_depth_2d;
 #endif
-@group(1) @binding(2) var screen_sampler: sampler;
-@group(1) @binding(3) var<uniform> volume: VolumeUniform;
+@group(2) @binding(2) var screen_sampler: sampler;
+@group(2) @binding(3) var<uniform> volume: VolumeUniform;
 
-fn view_ray_direction(frag_xy: vec2<f32>) -> vec3<f32> {
+struct ViewRay {
+    direction: vec3<f32>,
+    near_distance: f32,
+}
+
+fn view_ray(frag_xy: vec2<f32>) -> ViewRay {
     // Near plane (NDC z = 1). Reverse-Z infinite perspective puts the far
     // plane at infinity, so a depth-0 reconstruct is Inf/NaN.
     let near_world = position_ndc_to_world(frag_coord_to_ndc(vec4(frag_xy, 1.0, 1.0)));
-    let dir = near_world - view.world_position;
-    return dir / max(length(dir), 1e-4);
+    let to_near = near_world - view.world_position;
+    let near_distance = max(length(to_near), 1e-4);
+    return ViewRay(to_near / near_distance, near_distance);
 }
 
-fn intersect_surface_metres(origin: vec3<f32>, rd: vec3<f32>, t_max: f32, surface: f32) -> f32 {
-    if rd.y <= 1e-5 {
-        return t_max;
+fn intersect_local_surface_metres(
+    origin: vec3<f32>,
+    rd: vec3<f32>,
+    surface: f32,
+    facet_up: vec3<f32>,
+) -> f32 {
+    // The sampled tangent plane passes through (camera.x, surface, camera.z).
+    let numerator = (surface - origin.y) * facet_up.y;
+    let denominator = dot(rd, facet_up);
+    if abs(denominator) <= 1e-6 {
+        return -1.0;
     }
-    return clamp((surface - origin.y) / rd.y, 0.0, t_max);
+    return numerator / denominator;
+}
+
+fn terminal_underside_radiance(incident: vec3<f32>, facet_up: vec3<f32>) -> vec3<f32> {
+    let water_normal = -facet_up;
+    let reflected_direction = reflect(incident, water_normal);
+    let transmitted_direction = refract(incident, water_normal, N_WATER);
+    let cos_water = clamp(dot(-incident, water_normal), 0.0, 1.0);
+    let fresnel = fresnel_water_to_air(cos_water);
+    let reflected = medium_radiance_oriented(
+        vec3(0.0),
+        reflected_direction,
+        PATH_LENGTH_MAX,
+        0.0,
+        volume.extinction.rgb,
+        volume.extinction.w,
+        volume.scatter.rgb,
+        volume.environment.x,
+        facet_up,
+    );
+    // Do not sample an environment with WGSL's zero TIR direction.
+    if dot(transmitted_direction, transmitted_direction) < 1e-8 {
+        return reflected;
+    }
+    let window = sample_environment(transmitted_direction, facet_up, 0.0)
+        * (N_WATER * N_WATER);
+    return mix(window, reflected, fresnel);
 }
 
 @fragment
@@ -84,7 +126,8 @@ fn fragment(
     }
 
     let camera = view.world_position;
-    let rd_world = view_ray_direction(in.position.xy);
+    let ray = view_ray(in.position.xy);
+    let rd_world = ray.direction;
     var t_scene = PATH_LENGTH_MAX;
     if raw_depth > 0.0 {
         let world = position_ndc_to_world(frag_coord_to_ndc(vec4(in.position.xy, raw_depth, 1.0)));
@@ -96,14 +139,23 @@ fn fragment(
             );
         }
     }
-    let t_surface = intersect_surface_metres(camera, rd_world, PATH_LENGTH_MAX, plane);
     var t_end = min(t_scene, PATH_LENGTH_MAX);
-    if rd_world.y > 0.0 && raw_depth <= 0.0 {
-        // With no depth hit, stop at the mean plane and never integrate sky
-        // as underwater radiance. A real displaced surface hit remains the
-        // nearest endpoint so crest and trough underside shading is retained.
-        t_end = min(t_end, t_surface);
+    let facet_up = normalize(volume.interface_normal.xyz);
+    if dot(rd_world, facet_up) > 1e-6 && raw_depth <= 0.0 {
+        // Reconstruct a clipped exit from the camera's sampled local tangent
+        // plane. Every upward ray in the unbounded single-sheet ocean must
+        // eventually leave the water, so its local plane also closes later
+        // no-depth gaps. Bounded bodies retain the stricter sub-near-only path
+        // because their open side walls need explicit lateral clipping.
+        let t_surface = intersect_local_surface_metres(camera, rd_world, plane, facet_up);
         scene = vec3(0.0);
+        if t_surface > 0.0 {
+            t_end = min(t_end, t_surface);
+            let clipped_before_near = t_surface <= ray.near_distance + 1e-4;
+            if clipped_before_near || volume.environment.z > 0.5 {
+                scene = terminal_underside_radiance(rd_world, facet_up);
+            }
+        }
     }
     let d0 = max(plane - camera_y, 0.0);
     return vec4(

@@ -61,7 +61,7 @@ query = ["dep:bevy-aqua-query"]
 reflect = ["dep:bevy-aqua-reflect"]
 motion = ["dep:bevy-aqua-motion"]
 spray = ["dep:bevy-aqua-spray", "query"]
-underwater = ["dep:bevy-aqua-volume", "bevy-aqua-core/underwater"]
+underwater = ["dep:bevy-aqua-volume", "bevy-aqua-core/underwater", "query"]
 
 [dependencies]
 bevy-aqua-core.workspace = true
