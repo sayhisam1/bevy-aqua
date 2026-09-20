@@ -6,7 +6,7 @@
 
 Camera-centred ocean rendering for Bevy 0.19 with analytic and FFT waves,
 depth-aware transmission, reflections, persistent foam, localized water
-bodies, and GPU surface queries.
+bodies, GPU surface queries, and opt-in underwater rendering.
 
 ![FFT ocean at sunset with planar buoy reflection](docs/images/sunset-fft.jpg)
 
@@ -15,7 +15,7 @@ bodies, and GPU surface queries.
 - Five camera-centred displacement cascades with smooth LOD blending.
 - Crest-style analytic waves or Tessendorf spectral waves.
 - Beer-Lambert transmission, refraction, reflections, and scene lighting.
-- Underwater volume and water surface shading.
+- Opt-in underwater volume scattering and water-surface underside shading.
 - Persistent whitecaps and shoreline foam.
 - Static terrain heightfields for shoaling and shallow-water optics.
 - Bounded ponds, lakes, and river corridors with per-body optics.
@@ -44,33 +44,43 @@ Browser WebGPU/Wasm support was contributed by
 
 The default `query` and `reflect` features enable GPU wave probes and planar
 reflections. The optional `spray` feature adds `bevy-aqua-spray` and `bevy_hanabi`,
-implies `query`, and defaults to `Off` at runtime. Mobile and other desktop APIs
-are not yet verified.
+implies `query`, and defaults to `Off` at runtime. The optional `underwater`
+feature adds the camera-volume pass and two-sided underside shading; it is not
+enabled by default. Mobile and other desktop APIs are not yet verified.
 
 ## Quick start
 
 ```rust
-use bevy::{core_pipeline::prepass::DepthPrepass, prelude::*};
+use bevy::{
+    camera::{Exposure, Hdr},
+    core_pipeline::prepass::DepthPrepass,
+    light::{Atmosphere, AtmosphereEnvironmentMapLight, atmosphere::ScatteringMedium},
+    pbr::AtmosphereSettings,
+    prelude::*,
+};
 use bevy_aqua::{AquaPlugin, Ocean};
 
 fn main() {
     App::new()
         .insert_resource(Ocean::default())
         .add_plugins((DefaultPlugins, AquaPlugin))
-        .add_systems(Startup, |mut commands: Commands| {
+        .add_systems(Startup, |mut commands: Commands,
+                              mut media: ResMut<Assets<ScatteringMedium>>| {
+            commands.spawn(Atmosphere::earth(media.add(ScatteringMedium::earth(256, 256))));
             commands.spawn((
                 Camera3d::default(),
+                Hdr,
+                Exposure { ev100: 12.0 },
+                AtmosphereSettings::default(),
+                AtmosphereEnvironmentMapLight::default(),
                 DepthPrepass,
                 Transform::from_xyz(24.0, 12.0, 32.0)
                     .looking_at(Vec3::ZERO, Vec3::Y),
             ));
             commands.spawn((
-                DirectionalLight::default(),
+                DirectionalLight { illuminance: 16_000.0, ..default() },
                 Transform::from_rotation(Quat::from_euler(
-                    EulerRot::XYZ,
-                    -0.8,
-                    -0.6,
-                    0.0,
+                    EulerRot::XYZ, -0.8, -0.6, 0.0,
                 )),
             ));
         })
@@ -81,6 +91,12 @@ fn main() {
 Insert one `Ocean` resource. `Ocean::level` sets the global sea level. Remove
 the resource for bounded-water-only worlds. One active `Camera3d` is the
 supported view path.
+
+Use HDR and an explicit camera exposure when lighting water with daylight-level
+illuminance. The examples use EV100 12; tune exposure for your scene rather than
+changing the water's light response. A `ClearColor` only paints the background:
+it does not light the water or supply a reflected sky. Provide an environment
+map, or use `AtmosphereEnvironmentMapLight` with an atmosphere as above.
 
 ## Configuration
 
@@ -94,16 +110,67 @@ data; set them before the plugin starts.
 
 `AquaSettings` selects a `WaterOptics` preset and a `detail_strength` in
 `0..=2`. `WaterOptics::DEEP_OCEAN` is the default. Coastal, tropical, and
-clear-fresh presets are also provided. Extinction, particle scatter scale
-and tint, molecular Rayleigh, and Henyey-Greenstein `scattering_asymmetry`
-live on that optics profile. `far_tier_start` and `far_tier_end`
+clear-fresh presets are also provided. `far_tier_start` and `far_tier_end`
 bound the reduced-cost shading transition in metres. Far shading keeps sun
 and reflections while omitting depth, foam, and sampled subsurface detail.
-`reflections` selects the default planar mirror views or the byte-compatible cubemap-only path. Mark terrain or a
+`reflections` selects the default planar mirror views or the cubemap-only path. Both use the same dielectric Fresnel response. Mark terrain or a
 scene root with `ReflectedInWater` to include it and its descendants in planar
-views. `caustics` controls the default procedural shallow-bed lighting; set it
+views.
+
+**Bevy 0.19.1 limitation:** planar mirrors can light double-sided
+`StandardMaterial` geometry with the wrong normal polarity. The mirrored camera
+reverses winding, but upstream material specialization swaps culling without
+changing the raster front-face convention. This has been reproduced with both
+forward and deferred reflection rendering; the ordinary view remains correct.
+Aqua does not currently patch that dependency. Disabling `double_sided` is not a
+general workaround: physical back faces then lose their intended lighting.
+A comprehensive repair must change front-face convention and culling together
+in Bevy. A workspace dependency patch must also be configured by downstream
+applications; it is not inherited from a library's manifest.
+
+`caustics` controls the default procedural shallow-bed lighting; set it
 to `None` to skip both texture samples. Hosts can update
 `CausticsSunVisibility` to fold cloud-shadow coverage into the direct sun.
+
+Caustic patterns are anchored to the opaque receiver selected by transmission,
+including accepted refraction or its raw fallback. The receiver must be submerged
+in the transmitting body; its depth uses that body's local water level. Missing,
+exposed, and cross-body receivers omit the caustic contribution.
+
+Mip selection uses four neighboring depth samples after caustic admission. These
+hold the central refraction offset fixed, rather than replaying neighboring
+normals and refraction acceptance. A neighbor view-depth jump above
+`max(0.05 m, 1% of receiver view depth)` suppresses the contribution. This
+heuristic can reject steep continuous surfaces and miss small discontinuities;
+it is not a surface-identity test or exact refracted filtering. Sun/shadow
+selection remains at the water fragment. The pattern and incoming attenuation
+are still flat-interface surrogates, not traced sun-to-receiver caustics.
+Disabling caustics also skips these four neighbor reads.
+
+### Underwater rendering
+
+Enable Cargo feature `underwater` to let `AquaPlugin` install the submerged
+camera-volume pass and water-surface underside shading:
+
+```sh
+cargo run --example underwater --features underwater
+```
+
+The same example without `--features underwater` is the feature-off control.
+For a readable comparison, that scene explicitly derives from
+`WaterOptics::CLEAR_FRESH` with extinction `(0.06, 0.025, 0.015) m⁻¹` and
+scatter scale `0.18`; this does not change `DEEP_OCEAN` or any production
+default. The feature reuses `WaterOptics`; its new `scatter_tint` and
+`scattering_asymmetry` fields control medium scatter colour and directionality.
+`UnderwaterSettings::receiver_relighting` defaults to `false` because the
+optional approximation also attenuates emissive and local-light contributions.
+
+This first integration uses a homogeneous horizontal mean plane. It does not
+claim a displaced per-pixel waterline, screen-space reflections, bounded-body
+side clipping, or multi-camera support. Orthographic cameras skip the volume
+composite. Read [the underwater integration bounds](docs/underwater.md) before
+shipping it. The presence of the example and browser build configuration is not
+a claim of visual validation on every target.
 
 ### Terrain bed
 
@@ -156,6 +223,39 @@ shapes remain flat, matching their rendered geometry. The per-frame limit is
 256 probes. `WaveSurface::crest` exposes the same
 horizontal-compression source used to seed persistent whitecaps.
 
+### Spatial consistency (unreleased)
+
+These fixes make the renderer, queries, and baked fields agree about where
+water is. In plain terms:
+
+1. **Bounded-water distance uses its enclosing square.** The stored extent was
+   a square half-width but far culling treated it as a circle radius, so pond
+   corners could disappear too early. Forward and motion passes now measure
+   distance from the square. There is no API change; distant edge pixels and
+   motion coverage can change.
+2. **Ocean query LOD stays fixed in world space.** Flow should move wave phase,
+   not the LOD rings. Queries previously chose an LOD from the flow-shifted
+   sample point, so a stationary probe could cross LODs as time passed. LOD now
+   uses the requested world XZ while displacement still follows flow. There is
+   no API change; query values can change near LOD boundaries.
+3. **Shore fields publish their actual rounded texel region.** Image dimensions
+   are rounded up to whole texels, but the old metadata kept the pre-rounding
+   size. Sampling and baked texel centres could then disagree near the positive
+   X/Z edges. The region now spans `width * texel` by `height * texel`. There is
+   no API change; ownership, flow, and shore results can shift at edge texels.
+4. **Bed-map `size` means centre-to-centre span.** The implementation already
+   used `size` from the first texel centre to the last. Documentation had called
+   it an edge-to-edge image size. The docs now state `(N - 1) * step`. Runtime
+   behavior is unchanged, but maps authored from the old wording may need their
+   metadata corrected.
+5. **Pond-only worlds keep unused support vertices still.** Without an `Ocean`,
+   vertices outside bounded-water ownership could still receive ocean
+   displacement and motion history. They now remain flat while river-owned
+   vertices keep their river wave path. There is no API change; stray moving
+   pond-edge geometry disappears and motion vectors match.
+
+See [`MIGRATION.md`](MIGRATION.md) for the migration handoff.
+
 ### Spray
 
 Enable Cargo feature `spray`, then insert `SpraySettings` before `AquaPlugin`.
@@ -163,6 +263,27 @@ Enable Cargo feature `spray`, then insert `SpraySettings` before `AquaPlugin`.
 probe, emitter, particle-rate, distance, and projected-screen-coverage budgets.
 They reuse `WaveSurface::crest` and bed depth rather than adding a spray fluid
 simulation.
+
+### Spray consistency (unreleased)
+
+In plain terms:
+
+1. **A burst spends budget only when an emitter keeps it.** Candidates used to
+   wrap around the fixed emitter pool and overwrite pending bursts after those
+   bursts had already spent tokens and cooldown. Each emitter is now reserved
+   once per dispatch, so crowded crests keep the spray density the budget paid
+   for. There is no API change; busy-view burst selection and density can change.
+2. **Probe direction stays stable when looking nearly vertical.** Projecting the
+   camera's almost-vertical forward vector made tiny rounding errors steer the
+   probe grid. The near-vertical path now recovers yaw from camera-right. There
+   is no API change; extreme-pitch probe placement and resulting spray can change.
+3. **Particles inherit the water surface and current.** Bursts always launched
+   around world-up and ignored river flow because emitters received only crest
+   strength. Emitters now receive a safe query normal and the owning body's
+   authored current. Spray visibly leans with crests and drifts with rivers.
+   There is no Rust API change; sloped or flowing spray trajectories can change.
+
+See [`MIGRATION.md`](MIGRATION.md) for the full ELI5 handoff and limits.
 
 ## Examples
 
@@ -180,14 +301,22 @@ source code.
 | `terrain_bed` | Terrain height input, shoaling, and shallow-water optics | <img src="docs/images/examples/terrain_bed.jpg" alt="terrain_bed example" width="220"> |
 | `debug_views` | Automatic cycle through all Aqua diagnostics | <img src="docs/images/examples/debug_views.jpg" alt="debug_views example" width="220"> |
 | `water_optics` | Water appearance presets shown side by side | <img src="docs/images/examples/water_optics.jpg" alt="water_optics example" width="220"> |
+| `underwater` | Opt-in submerged volume and underside integration | Screenshot pending |
 | `planar_reflection` | Planar reflection of marked scene geometry | <img src="docs/images/examples/planar_reflection.jpg" alt="planar_reflection example" width="220"> |
 | `wave_query` | GPU surface queries driving a procedural buoy | <img src="docs/images/examples/wave_query.jpg" alt="wave_query example" width="220"> |
-| `underwater` | Open ocean from 20 m down, looking toward the sun | <img src="docs/images/examples/underwater.jpg" alt="underwater example" width="220"> |
 
 Run any scene natively:
 
 ```sh
 cargo run --example ocean
+```
+
+The underwater comparison uses the same public scene with the feature off and
+on:
+
+```sh
+cargo run --example underwater
+cargo run --example underwater --features underwater
 ```
 
 The same source runs with browser WebGPU:
@@ -200,6 +329,54 @@ CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-server-runner \
 ```
 
 See [`examples/README.md`](examples/README.md) for the full command list.
+
+## Screen-space refraction limitation
+
+Refraction validates one opaque depth texel, while transmission color uses linear
+filtering. At a foreground silhouette, a neighboring above-water opaque texel can
+therefore contribute color even when `RefractionValidity` accepts the sample.
+Viewport-edge color clamping does not prevent this interior silhouette case.
+`RefractionValidity` is not proof that every filtered color contributor lies
+behind the water.
+
+## Lighting appearance (unreleased)
+
+Cubemap-only oceans now use the same dielectric Fresnel response as planar
+reflections. Grazing-angle reflections can therefore be stronger than before.
+`WaterOptics::sun_roughness` controls direct-light highlight width, not the
+Fresnel curve; negative values still inherit the ocean setting. Existing scenes
+may need an appearance review. That Fresnel change does not alter public fields
+or GPU layouts; the separate wave-spectrum and roughness changes do. See
+[MIGRATION.md](MIGRATION.md) for `BinSpec` and surface-uniform updates.
+
+Water lighting also retains resolved wave-normal slopes in both near and far
+shading. This differs from the former GodotOceanWaves-style exponential
+lighting-normal fade, so existing scenes can show stronger wave reflections at
+a distance. Near and far shading share the normal and wave-roughness calculation.
+
+The direct-sun GGX alpha floor now defaults to `0.04` (previously `0.4`) for
+narrower base highlights. Filtered wave variance still adds roughness. This floor
+also feeds the existing subsurface-light mask; it is an appearance setting, not a
+physically calibrated water parameter. Explicit per-body `sun_roughness` values
+still override the global floor; negative values inherit it.
+
+The wave-roughness cap, Fresnel model, and foam fade are unchanged. Detail and
+capillary slopes still fade toward the far tier, but their removed energy now
+moves into unresolved roughness instead of disappearing. Body scatter scaling
+also applies in the far tier, and transmissive accepted paths remain on near
+shading. Footprint-based roughness and detail mip filtering remain;
+geometric/FFT normals are not fully convolved over each pixel footprint. This
+is not a guarantee of alias-free rendering.
+
+## Debug-mode migration (unreleased)
+
+Two `AquaDebug` variants have been removed:
+
+- Replace `ShallowComposite` with `Shaded`; both selected the same rendering path.
+- Replace `FoamDensityBilinear` with `FoamDensity` to inspect foam using its normal
+  reconstruction filter. The old bilinear-only comparison is no longer available.
+
+The normal foam filters and remaining diagnostic views are unchanged.
 
 ## AI disclosure
 

@@ -16,23 +16,27 @@ struct CameraDepthPath {
     path_length: f32,
     screen_uv: vec2<f32>,
     scene_z: f32,
-    hit_y: f32,
+    receiver_world: vec3<f32>,
     has_background: bool,
 }
 
-struct TransmissionSample {
-    uv: vec2<f32>,
+struct CameraDepthDebug {
     path_length: f32,
-    hit_y: f32,
+    refracted_path_length: f32,
+    screen_uv: vec2<f32>,
+    refracted_uv: vec2<f32>,
+    raw_receiver_world: vec3<f32>,
+    refracted_receiver_world: vec3<f32>,
+    refracted_sample_valid: bool,
     has_background: bool,
-    refraction_valid: bool,
 }
 
 struct NearSurface {
     normal: vec3<f32>,
     lighting_normal: vec3<f32>,
     lighting_distance: f32,
-    lighting_normal_strength: f32,
+    // Amplitude retained by the far-tier detail fade; geometric slopes stay unchanged.
+    near_detail_weight: f32,
     filtered_detail_variance: f32,
 }
 
@@ -47,11 +51,14 @@ struct PrimaryLightState {
 }
 
 struct MediumState {
+    deep_body_albedo: vec3<f32>,
+    diffuse_irradiance: vec3<f32>,
     water_depth: f32,
     foam_density: f32,
 }
 
 struct FoamState {
+    roughness_density: f32,
     visible_density: f32,
     white_density: f32,
     white_mask: f32,

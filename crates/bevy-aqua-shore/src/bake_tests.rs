@@ -129,3 +129,121 @@ fn f32_to_f16_bits_matches_known_values() {
     // Tiny magnitudes flush toward zero.
     assert_eq!(f32_to_f16_bits(1.0e-9), 0x0000);
 }
+
+#[test]
+fn boundary43_real_bake_preserves_square_extent_and_corner_ownership() {
+    let shape = WaterShape::Polygon {
+        points: vec![
+            Vec2::new(-100.0, -100.0),
+            Vec2::new(100.0, -100.0),
+            Vec2::new(100.0, 100.0),
+            Vec2::new(-100.0, 100.0),
+        ],
+    };
+    let body = ResolvedWaterBody::resolve(
+        Entity::from_bits(1),
+        &shape,
+        None,
+        &GlobalTransform::from(Transform::from_xyz(450.0, 0.0, 450.0)),
+    )
+    .unwrap();
+    assert_eq!(body.aabb(), (Vec2::splat(348.0), Vec2::splat(552.0)));
+    assert_eq!(body.extent(), (Vec2::splat(450.0), 102.0));
+    let (params, maps) = bake(&[body], false);
+    assert_eq!(params.meta.x, 1.0);
+    assert_eq!(params.meta.y, 0.0);
+    // Read the actual uploaded BodyParams extent, not a separately built value.
+    let mut bytes = Vec::new();
+    bevy::render::render_resource::encase::UniformBuffer::new(&mut bytes)
+        .write(&params.bodies[0])
+        .unwrap();
+    let read = |offset| f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    assert_eq!(
+        [read(16), read(20), read(24), read(28)],
+        [450.0, 450.0, 0.0, 102.0]
+    );
+    let size = params.region.zw();
+    let width = maps.texture_descriptor.size.width;
+    let height = maps.texture_descriptor.size.height;
+    for point in [Vec2::splat(353.0), Vec2::splat(360.0), Vec2::splat(450.0)] {
+        let uv = (point - params.region.xy()) / size;
+        let texel = read_texel(
+            &maps,
+            (uv.x * width as f32) as u32,
+            (uv.y * height as f32) as u32,
+            width,
+            height,
+            0,
+            4,
+        );
+        assert_eq!(texel[0], 0.0, "explicit water level");
+        assert_eq!(texel[1], 1.0, "corner interior has bounded owner");
+    }
+    assert!(Vec2::splat(450.0).length() - read(28) > 512.0);
+    assert!(Vec2::splat(353.0).length() < 512.0);
+}
+
+#[test]
+fn baked_region_matches_rounded_texture_grid() {
+    // Fractional and exact extents, including an elongated multi-body region.
+    for (radius, offset) in [(10.05, 0.0), (10.0, 0.0), (10.05, 3.13)] {
+        let shape = WaterShape::Circle { radius };
+        let bodies: Vec<_> = [0.0, offset]
+            .into_iter()
+            .enumerate()
+            .map(|(index, x)| {
+                ResolvedWaterBody::resolve(
+                    Entity::from_bits(index as u64 + 1),
+                    &shape,
+                    None,
+                    &GlobalTransform::from(Transform::from_xyz(x, 0.0, 0.0)),
+                )
+                .unwrap()
+            })
+            .collect();
+        let (params, image) = bake(&bodies, false);
+        let dimensions = image.texture_descriptor.size;
+        let extent = Vec2::new(dimensions.width as f32, dimensions.height as f32) * params.meta.z;
+        assert_eq!(
+            params.region.zw(),
+            extent,
+            "exported bounds must describe the baked grid"
+        );
+    }
+}
+
+#[test]
+fn baked_slots_match_published_world_texel_centres() {
+    let body = ResolvedWaterBody::resolve(
+        Entity::from_bits(1),
+        &WaterShape::Circle { radius: 10.05 },
+        None,
+        &GlobalTransform::IDENTITY,
+    )
+    .unwrap();
+    let (params, image) = bake(std::slice::from_ref(&body), false);
+    let dimensions = image.texture_descriptor.size;
+    for row in 0..dimensions.height {
+        for column in 0..dimensions.width {
+            let uv = Vec2::new(
+                (column as f32 + 0.5) / dimensions.width as f32,
+                (row as f32 + 0.5) / dimensions.height as f32,
+            );
+            let point = params.region.xy() + uv * params.region.zw();
+            let slot = read_texel(
+                &image,
+                column,
+                row,
+                dimensions.width,
+                dimensions.height,
+                0,
+                4,
+            )[1];
+            assert_eq!(
+                slot != 0.0,
+                body.contains(point),
+                "world={point:?}, texel=({column},{row})"
+            );
+        }
+    }
+}

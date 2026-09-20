@@ -71,6 +71,7 @@ fn root_tracks_ocean_and_only_valid_resolved_bodies() {
         .insert_resource(lod::Data::new(
             Handle::default(),
             Handle::default(),
+            Handle::default(),
             lod::GpuLayout::new(&lod::layout(Vec2::ZERO), Vec2::ZERO, 0.0),
         ))
         .add_systems(Startup, init)

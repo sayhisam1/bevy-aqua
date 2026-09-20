@@ -5,8 +5,7 @@
 
 #import bevy_pbr::mesh_view_bindings::globals
 
-#import bevy_aqua_core::waves_sample::{CascadeParams, world_to_uv}
-#import aqua::cascade::{LUMINANCE_EPSILON, LocalLightSample, MIN_SAMPLE_WEIGHT, RiverState, advected_world, capillary_resolved_weight, cascade_layout, foam_data, foam_pattern, foam_pattern_sampler, foam_sampler, lod_count, screen_texture_lod, surface}
+#import aqua::cascade::{CascadeParams, LUMINANCE_EPSILON, LocalLightSample, MIN_SAMPLE_WEIGHT, RiverState, advected_world, capillary_resolved_weight, cascade_layout, foam_data, foam_pattern, foam_pattern_sampler, foam_sampler, lod_count, screen_texture_lod, surface, world_to_uv}
 #import aqua::foam::contract::{FOAM_PATTERN_RESOLUTION, FOAM_TEXTURE_RESOLUTION}
 const INV_PI: f32 = 0.31830988618;
 const CREST_FOAM_WHITE_COLOR: vec4<f32> = vec4(
@@ -110,7 +109,7 @@ fn sample_foam_cascade(world_xz: vec2<f32>, cascade: CascadeParams, layer: i32) 
         0.0,
     ).r;
     // Gerstner's smooth source already hides its texels; bicubic taps only help FFT.
-    if surface.reflection.x < 0.5 || surface.debug.w > 0.5 {
+    if surface.reflection.x < 0.5 {
         return bilinear;
     }
     let bicubic = sample_foam_bicubic(uv, layer, FOAM_TEXTURE_RESOLUTION);
@@ -190,29 +189,34 @@ fn surface_foam_mask(
 }
 
 // Add elongated, flow-aligned foam where fast water meets a bank.
-fn river_streak_density(state: RiverState, world_xz: vec2<f32>, lod: u32, alpha: f32) -> f32 {
+fn river_streak_coverage(state: RiverState, world_xz: vec2<f32>, lod: u32, alpha: f32) -> f32 {
     if !state.enabled {
         return 0.0;
     }
     let speed = length(state.sample.xy);
-    // Same 8 m near-bank band as the ripple scale.
-    let margin_ratio = clamp(state.sample.z / 8.0, 0.0, 1.0);
-    let strength = (1.0 - margin_ratio) * clamp(speed / 1.6 - 0.2, 0.0, 1.0);
+    // A bank interaction occupies a fraction of the channel, not a fixed
+    // eight-metre band that can cover the entire river. Keep pools clear.
+    let bank_width = clamp(0.2 * state.sample.w, 0.25, 1.5);
+    let bank = (1.0 - smoothstep(0.0, bank_width, state.sample.z))
+        * smoothstep(0.0, 0.1, state.sample.z);
+    let strength = bank * clamp(speed / 1.6 - 0.2, 0.0, 1.0);
     if strength <= 0.001 {
         return 0.0;
     }
     let dir = state.flow / max(speed, 1e-4);
-    let along = dot(dir, world_xz) / (1.0 + 0.9 * min(speed, 4.0));
-    let across = dot(vec2(-dir.y, dir.x), world_xz);
-    // The mask input is a synthetic along/across coordinate; advecting it
-    // here matches the previous in-mask advection of that coordinate.
-    return surface_foam_mask(
-        advected_world(vec2(along, across * 1.6)),
+    // Advect in world space BEFORE rotating into the flow-aligned frame.
+    let advected = advected_world(world_xz);
+    let along = dot(dir, advected) / (1.0 + 0.9 * min(speed, 4.0));
+    let across = dot(vec2(-dir.y, dir.x), advected);
+    let pattern = surface_foam_mask(
+        vec2(along, across * 1.6),
         lod,
         alpha,
-        strength * 1.4,
+        0.7,
         vec2(0.0),
     );
+    // This is already a coverage mask: the caller must not threshold it again.
+    return strength * pattern;
 }
 
 fn foam_bubble_colour(

@@ -147,6 +147,7 @@ pub fn init(mut commands: Commands, data: Res<lod::Data>, textures: Res<Textures
         state_b: textures.state_b.clone(),
         surface: textures.surface.clone(),
         waves: data.texture(),
+        wave_surface: data.fft_surface(),
         uniform: Uniform::new(layout.clone()),
         simulated_layout: layout,
     });
@@ -165,6 +166,7 @@ pub fn update(
     frame.uniform.target_layout = target_layout.clone();
     frame.uniform.step.x = target_tick(time.elapsed_secs_f64());
     frame.uniform.step.z = u32::from(waves.model == WaveModel::Spectral);
+    frame.uniform.advection = Vec4::new(waves.flow.x, waves.flow.y, time.elapsed_secs(), 0.0);
     frame.simulated_layout = target_layout;
 }
 
@@ -184,6 +186,7 @@ pub struct Frame {
     state_b: Handle<Image>,
     surface: Handle<Image>,
     waves: Handle<Image>,
+    wave_surface: Handle<Image>,
     uniform: Uniform,
     simulated_layout: lod::GpuLayout,
 }
@@ -198,6 +201,8 @@ struct Uniform {
     wave: Vec4,
     // shoreline outer depth, strength, wet-edge depth, breaker peak depth.
     shore: Vec4,
+    // XY global current (m/s), Z current wave-producer time (seconds).
+    advection: Vec4,
 }
 
 impl Uniform {
@@ -207,6 +212,7 @@ impl Uniform {
             target_layout: layout,
             step: UVec4::new(0, 1, 0, 0),
             wave: Vec4::new(STEP_SECONDS, FADE_RATE, WAVE_STRENGTH, WAVE_COVERAGE),
+            advection: Vec4::ZERO,
             shore: Vec4::new(
                 SHORE_OUTER_DEPTH,
                 SHORE_STRENGTH,
@@ -344,7 +350,6 @@ fn make_pattern_texture() -> Image {
     let mut levels = Vec::new();
     let mut size = PATTERN_SIZE;
     let mut level = resize_srgb(&source, SOURCE_PATTERN_SIZE, PATTERN_SIZE);
-    bevy_aqua_core::write_pattern_caustics(&mut level, PATTERN_SIZE);
     loop {
         levels.extend_from_slice(&level);
         if size == 1 {

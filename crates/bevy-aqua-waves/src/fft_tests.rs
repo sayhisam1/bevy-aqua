@@ -29,9 +29,16 @@ fn deep_water_shoaling_is_exactly_one_for_every_bin() {
     for lod in 0..LOD_COUNT {
         let texel_width = 4.0 * bevy_aqua_core::lod_scale(lod) / RESOLUTION as f32;
         let max_wavelength = 4.0 * texel_width;
+        let upper = if lod == LOD_COUNT - 1 {
+            texel_width * RESOLUTION as f32 / 4.0
+        } else {
+            max_wavelength
+        };
         for bin in 0..ATTENUATION_BINS {
             let octave_fraction = (bin as f32 + 0.5) / ATTENUATION_BINS as f32;
-            let representative_wavelength = 0.5 * max_wavelength * octave_fraction.exp2();
+            let representative_wavelength = 0.5
+                * max_wavelength
+                * (octave_fraction * (upper / (0.5 * max_wavelength)).log2()).exp2();
             let wave_number = core::f32::consts::TAU / representative_wavelength;
             assert_eq!(
                 shoaling_weights(depth, wave_number),
@@ -69,10 +76,26 @@ fn spectrum_authoring_reshapes_h0_deterministically() {
 #[test]
 fn fft_displacement_bounds_match_deterministic_h0() {
     let layout = lod::GpuLayout::new(&lod::layout(Vec2::ZERO), Vec2::ZERO, 0.0);
-    let expected = [252.608_06, 244.313_5, 227.737_76, 194.751_74, 129.361_68];
+    let specs = cascade_specs(&layout);
+    let field = bevy_aqua_fft::make_h0(RESOLUTION, &specs, 1.0, &SpectrumAuthoring::default());
+    let mut expected = [0.0f64; LOD_COUNT];
+    for (i, rgba) in field.bytes.chunks_exact(16).enumerate() {
+        let re = f32::from_ne_bytes(rgba[..4].try_into().unwrap()) as f64;
+        let im = f32::from_ne_bytes(rgba[4..8].try_into().unwrap()) as f64;
+        expected[i / (RESOLUTION * RESOLUTION) as usize] +=
+            2.0 * re.hypot(im) / (RESOLUTION * RESOLUTION) as f64;
+    }
+    for band in (0..LOD_COUNT - 1).rev() {
+        expected[band] += expected[band + 1];
+    }
     let actual = cumulative_height_bounds(&layout, 1.0, &SpectrumAuthoring::default());
     for (actual, expected) in actual.into_iter().zip(expected) {
-        assert!((actual - expected).abs() < 0.02, "{actual} != {expected}");
+        assert!(actual.is_finite());
+        assert!(actual as f64 >= expected, "{actual} understates {expected}");
+        assert!(
+            (actual as f64 - expected).abs() < 0.02,
+            "{actual} != {expected}"
+        );
     }
 }
 
@@ -95,4 +118,75 @@ fn fft_uniform_mode_flags_offset_is_stable() {
         f32::from_le_bytes(mode_bytes[index * 4..index * 4 + 4].try_into().unwrap())
     });
     assert_eq!(mode, [5.0, 6.0, 7.0, 8.0]);
+}
+
+#[test]
+fn long_swell_support_normalization_zero_and_partition() {
+    let layout = lod::GpuLayout::new(&lod::layout(Vec2::ZERO), Vec2::ZERO, 0.0);
+    let specs = cascade_specs(&layout);
+    let author = SpectrumAuthoring {
+        wind_radians: 0.0,
+        wind_speed: 14.0,
+        fetch: 60_000.0,
+    };
+    let minima: Vec<_> = specs.iter().map(|c| c.min_wavelength).collect();
+    let maxima: Vec<_> = specs.iter().map(|c| c.max_wavelength).collect();
+    assert_eq!(minima, [0.75, 1.5, 3.0, 6.0, 12.0]);
+    assert_eq!(maxima, [1.5, 3.0, 6.0, 12.0, 384.0]);
+    for pair in specs.windows(2) {
+        assert_eq!(pair[0].max_wavelength, pair[1].min_wavelength);
+    }
+    let mut energy = 0.0f64;
+    let mut peak_bins = 0;
+    for (band, spec) in specs.iter().copied().enumerate() {
+        for i in 0..RESOLUTION * RESOLUTION {
+            let bin = bevy_aqua_fft::spectral_bin(RESOLUTION, spec, i, &author);
+            if i == 0 || i % RESOLUTION == RESOLUTION / 2 || i / RESOLUTION == RESOLUTION / 2 {
+                assert!(bin.is_none());
+            }
+            if let Some(bin) = bin {
+                assert!(
+                    bin.wavelength >= spec.min_wavelength && bin.wavelength < spec.max_wavelength
+                );
+                assert_eq!(
+                    specs
+                        .iter()
+                        .filter(|s| bin.wavelength >= s.min_wavelength
+                            && bin.wavelength < s.max_wavelength)
+                        .count(),
+                    1
+                );
+                if bin.wavelength > 50.0 && bin.wavelength < 60.0 {
+                    assert_eq!(band, 4);
+                    peak_bins += 1;
+                }
+                assert!(bin.raw_variance.is_finite() && bin.raw_variance >= 0.0);
+                energy += bin.raw_variance as f64;
+            }
+        }
+    }
+    assert!(peak_bins > 0);
+    let normalization = bevy_aqua_fft::spectrum_normalization(RESOLUTION, &specs, &author);
+    assert!((2.0 * energy * normalization as f64 - 0.64).abs() < 1e-4);
+    let zero = make_h0(&layout, 0.0, &author);
+    for bytes in zero.data.unwrap().chunks_exact(4) {
+        assert_eq!(f32::from_ne_bytes(bytes.try_into().unwrap()), 0.0);
+    }
+    assert_eq!(
+        cumulative_height_bounds(&layout, 0.0, &author),
+        [0.0; LOD_COUNT]
+    );
+    let unit = make_h0(&layout, 1.0, &author);
+    let double = make_h0(&layout, 2.0, &author);
+    for (a, b) in unit
+        .data
+        .unwrap()
+        .chunks_exact(4)
+        .zip(double.data.unwrap().chunks_exact(4))
+    {
+        assert_eq!(
+            2.0 * f32::from_ne_bytes(a.try_into().unwrap()),
+            f32::from_ne_bytes(b.try_into().unwrap())
+        );
+    }
 }

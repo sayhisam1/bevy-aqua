@@ -231,7 +231,12 @@ fn volume_uniform(volume: &ExtractedVolume) -> VolumeUniform {
     VolumeUniform {
         extinction: optics.extinction.extend(optics.scatter_scale.max(0.0)),
         scatter: optics.scatter_tint.max(Vec3::ZERO).extend(0.0),
-        environment: Vec4::new(volume.optics.scattering_asymmetry, 0.0, 0.0, 0.0),
+        environment: Vec4::new(
+            volume.optics.scattering_asymmetry,
+            if volume.receiver_relighting { 1.0 } else { 0.0 },
+            0.0,
+            0.0,
+        ),
         sea: Vec4::new(volume.surface_level, volume.camera_y, 0.0, 0.0),
     }
 }
@@ -368,6 +373,8 @@ fn draw_volume(
             depth_slice: None,
             resolve_target: None,
             ops: Operations {
+                // The fullscreen shader copies source pixels outside this view's
+                // viewport, so the ping-pong destination is fully initialized.
                 load: LoadOp::Clear(Default::default()),
                 store: StoreOp::Store,
             },
@@ -383,4 +390,33 @@ fn draw_volume(
     render_pass.set_bind_group(1, bind_group, &[]);
     render_pass.draw(0..3, 0..1);
     pass_span.end(&mut render_pass);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fullscreen_copy_initializes_ping_pong_destination() {
+        let source = include_str!("render.rs");
+        let render = source.split("#[cfg(test)]").next().unwrap();
+        let shader = include_str!("volume.wgsl");
+        assert!(render.contains("load: LoadOp::Clear"));
+        assert!(!render.contains("render_pass.set_viewport("));
+        assert!(shader.contains("if any(in.position.xy < viewport_min)"));
+        assert!(shader.contains("return vec4(scene, 1.0);"));
+    }
+
+    #[test]
+    fn multisampled_depth_is_resolved_for_single_sample_post_target() {
+        let shader = include_str!("volume.wgsl");
+        assert!(shader.contains("textureNumSamples(depth_texture)"));
+        assert!(shader.contains("raw_depth = max(raw_depth"));
+        assert!(!shader.contains("@builtin(sample_index)"));
+    }
+
+    #[test]
+    fn upward_depth_hit_retains_displaced_surface_endpoint() {
+        let shader = include_str!("volume.wgsl");
+        assert!(shader.contains("rd_world.y > 0.0 && raw_depth <= 0.0"));
+        assert!(!shader.contains("t_surface < t_scene"));
+    }
 }

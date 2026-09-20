@@ -5,6 +5,7 @@
 
 mod fft;
 mod render;
+mod variance;
 
 #[doc(hidden)]
 pub use render::Prepared as RenderPrepared;
@@ -70,7 +71,8 @@ impl Plugin for AquaWavesPlugin {
         app.add_systems(Startup, init.after(CascadeDataReady));
         app.add_systems(
             PostUpdate,
-            update
+            (update, variance::upload)
+                .chain()
                 .after(CascadeMaterialsUpdated)
                 .after(bevy_aqua_core::WaterBodiesResolved),
         );
@@ -228,20 +230,26 @@ pub fn init(
         settings.sea_state.amplitude_multiplier(),
         &authoring,
     );
+    let analytic_uniform = make_uniform(
+        data.layout().clone(),
+        settings.sea_state.amplitude_multiplier(),
+        settings.wind_direction_degrees.to_radians(),
+    );
+    let analytic_variance = variance::analytic(&analytic_uniform);
+    let spectral_variance = variance::spectral(&h0_jonswap, data.layout());
     commands.insert_resource(StartupAmplitude(settings.sea_state.amplitude_multiplier()));
     commands.insert_resource(Frame {
         output: data.texture(),
-        raw: images.add(lod::make_lod_scratch()),
-        scratch_a: images.add(lod::make_lod_scratch()),
-        scratch_b: images.add(lod::make_lod_scratch()),
+        surface: data.fft_surface(),
+        raw: images.add(lod::make_texture()),
+        scratch_a: images.add(lod::make_texture()),
+        scratch_b: images.add(lod::make_texture()),
         h0: [images.add(h0_jonswap)],
         fft_state: std::array::from_fn(|_| images.add(fft::make_field_texture())),
         fft_scratch: std::array::from_fn(|_| images.add(fft::make_field_texture())),
-        uniform: make_uniform(
-            data.layout().clone(),
-            settings.sea_state.amplitude_multiplier(),
-            settings.wind_direction_degrees.to_radians(),
-        ),
+        uniform: analytic_uniform,
+        analytic_variance,
+        spectral_variance,
         fft_uniform: fft::Uniform {
             layout: data.layout().clone(),
             params: Vec4::new(0.0, settings.shallow_water_attenuation, 1.0, 0.0),
@@ -286,6 +294,7 @@ pub fn update(
 #[derive(Resource, Clone, ExtractResource, Debug)]
 pub struct Frame {
     output: Handle<Image>,
+    surface: Handle<Image>,
     raw: Handle<Image>,
     scratch_a: Handle<Image>,
     scratch_b: Handle<Image>,
@@ -295,6 +304,8 @@ pub struct Frame {
     uniform: Uniform,
     fft_uniform: fft::Uniform,
     model: WaveModel,
+    analytic_variance: [f32; LOD_COUNT],
+    spectral_variance: [f32; 8],
     // Active FFT attenuation-bin count per cascade (1 or ATTENUATION_BINS).
     fft_bins: u32,
 }

@@ -14,6 +14,7 @@
 //! let cascades = [BinSpec {
 //!     texel_width: 1.0,
 //!     texture_res: 256.0,
+//!     min_wavelength: 2.0,
 //!     max_wavelength: 4.0,
 //! }];
 //! let field = make_h0(256, &cascades, 1.0, &SpectrumAuthoring::default());
@@ -64,8 +65,10 @@ pub struct BinSpec {
     pub texel_width: f32,
     /// Texture side length in texels (the FFT period resolution).
     pub texture_res: f32,
-    /// Longest wavelength (metres) this cascade resolves; shorter waves
-    /// than half of it belong in finer cascades.
+    /// Inclusive shortest wavelength in metres. Independent of the upper bound
+    /// so the coarsest cascade can retain its lower cutoff when extended.
+    pub min_wavelength: f32,
+    /// Exclusive longest wavelength in metres.
     pub max_wavelength: f32,
 }
 
@@ -96,7 +99,7 @@ pub struct H0Field {
 /// Evaluates one flat texel index of a cascade slice as a JONSWAP bin.
 ///
 /// Returns `None` for inactive bins: the DC/Nyquist rows and wavelengths
-/// outside the cascade's `[max_wavelength/2, max_wavelength)` band.
+/// outside the cascade's `[min_wavelength, max_wavelength)` band.
 pub fn spectral_bin(
     resolution: u32,
     cascade: BinSpec,
@@ -113,7 +116,7 @@ pub fn spectral_bin(
         .rotate(delta_k * signed_frequency(index, resolution).as_vec2());
     let k_length = k.length();
     let wavelength = TAU / k_length.max(f32::MIN_POSITIVE);
-    let minimum = 0.5 * cascade.max_wavelength;
+    let minimum = cascade.min_wavelength;
     let active = k_length > 0.0
         && index.x != resolution / 2
         && index.y != resolution / 2
@@ -126,12 +129,40 @@ pub fn spectral_bin(
     })
 }
 
+fn validate_cascades(cascades: &[BinSpec]) {
+    for (index, cascade) in cascades.iter().enumerate() {
+        let period = cascade.texel_width * cascade.texture_res;
+        assert!(
+            period.is_finite() && period > 0.0,
+            "cascade {index}: FFT period must be finite and positive"
+        );
+        assert!(
+            cascade.min_wavelength.is_finite() && cascade.min_wavelength > 0.0,
+            "cascade {index}: min_wavelength must be finite and positive"
+        );
+        assert!(
+            cascade.max_wavelength.is_finite() && cascade.max_wavelength > 0.0,
+            "cascade {index}: max_wavelength must be finite and positive"
+        );
+        assert!(
+            cascade.min_wavelength < cascade.max_wavelength,
+            "cascade {index}: min_wavelength must be less than max_wavelength"
+        );
+    }
+}
+
 /// Returns the scale that gives the spectrum its target RMS surface height.
+///
+/// # Panics
+/// Panics if a cascade's period or wavelength bounds are not finite and positive,
+/// or its minimum wavelength is not less than its maximum.
 pub fn spectrum_normalization(
     resolution: u32,
     cascades: &[BinSpec],
     authoring: &SpectrumAuthoring,
 ) -> f32 {
+    // Validate once per generation, rather than once per spectral texel.
+    validate_cascades(cascades);
     let variance: f32 = cascades
         .iter()
         .copied()
@@ -146,6 +177,10 @@ pub fn spectrum_normalization(
 }
 
 /// Generates one deterministic h0 coefficient slice per cascade.
+///
+/// # Panics
+/// Panics for invalid cascade periods or wavelength intervals; see
+/// [`spectrum_normalization`].
 pub fn make_h0(
     resolution: u32,
     cascades: &[BinSpec],
@@ -183,6 +218,10 @@ pub fn make_h0(
 /// Phase-independent Fourier L1 displacement envelope per cascade,
 /// accumulated coarse-to-fine: slice `i` bounds every band it owns plus all
 /// finer ones combined into its AnimWaves output.
+///
+/// # Panics
+/// Panics for invalid cascade periods or wavelength intervals; see
+/// [`spectrum_normalization`].
 pub fn cumulative_height_bounds(
     resolution: u32,
     cascades: &[BinSpec],
@@ -191,7 +230,7 @@ pub fn cumulative_height_bounds(
 ) -> Vec<f32> {
     let normalization = spectrum_normalization(resolution, cascades, authoring);
     let transform_scale = (resolution as f32).powi(2);
-    let mut bands = vec![0.0; cascades.len()];
+    let mut bands = vec![0.0_f64; cascades.len()];
     for (slice, cascade) in cascades.iter().copied().enumerate() {
         for flat_index in 0..resolution * resolution {
             let Some(bin) = spectral_bin(resolution, cascade, flat_index, authoring) else {
@@ -202,14 +241,23 @@ pub fn cumulative_height_bounds(
             let h0 = transform_scale * (0.5 * variance).max(0.0).sqrt() * gaussian;
             // Evolution contains h0(k) and mirrored h0(-k). Summing all k
             // therefore contributes twice every stored coefficient.
-            bands[slice] += 2.0 * h0.length() / transform_scale;
+            // Accumulate the actual f32 H0 realization in f64. Long-wave
+            // support increases the dynamic range of this positive sum;
+            // f32 accumulation can lose small terms and understate the bound.
+            bands[slice] +=
+                2.0 * f64::from(h0.x).hypot(f64::from(h0.y)) / f64::from(transform_scale);
         }
     }
     let mut cumulative = vec![0.0; cascades.len()];
     let mut coarser = 0.0;
     for (slice, band) in bands.iter().enumerate().rev() {
         coarser += band;
-        cumulative[slice] = coarser;
+        // Round outward when publishing the conservative f32 envelope.
+        cumulative[slice] = if coarser == 0.0 {
+            0.0
+        } else {
+            (coarser as f32).next_up()
+        };
     }
     cumulative
 }

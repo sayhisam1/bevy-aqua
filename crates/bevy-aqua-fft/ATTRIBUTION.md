@@ -35,7 +35,7 @@ SOFTWARE.
 
 ## GodotOceanWaves
 
-Aqua's FFT foam reconstruction, close-range sub-surface scattering, and roughness-damped Fresnel model reimplement techniques studied in [GodotOceanWaves](https://github.com/2Retr0/GodotOceanWaves/tree/a171446f8174348895aaafc426576c26261058b9).
+Aqua's FFT foam reconstruction and close-range sub-surface scattering reimplement techniques studied in [GodotOceanWaves](https://github.com/2Retr0/GodotOceanWaves/tree/a171446f8174348895aaafc426576c26261058b9).
 
 GodotOceanWaves is used under the following MIT License:
 

@@ -40,17 +40,42 @@ fn intersect_surface_metres(origin: vec3<f32>, rd: vec3<f32>, t_max: f32, surfac
 
 @fragment
 fn fragment(
-#ifdef MULTISAMPLED
-    @builtin(sample_index) sample_index: u32,
-#endif
     in: FullscreenVertexOutput,
 ) -> @location(0) vec4<f32> {
-    var scene = textureSample(screen_texture, screen_sampler, in.uv).rgb;
+    // Screen color is the full backing target, while this pass is clipped to
+    // the active camera viewport. Derive backing-texture UV from frag coords.
+    let screen_size = vec2<f32>(textureDimensions(screen_texture));
+    let screen_uv = in.position.xy / screen_size;
+    var scene = textureSample(screen_texture, screen_sampler, screen_uv).rgb;
+    let viewport_min = view.viewport.xy;
+    let viewport_max = viewport_min + view.viewport.zw;
+    if any(in.position.xy < viewport_min) || any(in.position.xy >= viewport_max) {
+        // Initialize the complete ping-pong destination while preserving
+        // pixels belonging to other camera viewports.
+        return vec4(scene, 1.0);
+    }
 #ifdef MULTISAMPLED
-    let raw_depth = textureLoad(depth_texture, vec2<i32>(in.position.xy), i32(sample_index));
+    // The post-process target is single-sampled. Resolve reverse-Z depth to
+    // the nearest covered sample rather than using an invalid sample index.
+    var raw_depth = 0.0;
+    let sample_count = textureNumSamples(depth_texture);
+    for (var sample = 0u; sample < sample_count; sample += 1u) {
+        raw_depth = max(raw_depth, textureLoad(
+            depth_texture,
+            vec2<i32>(in.position.xy),
+            i32(sample),
+        ));
+    }
 #else
     let raw_depth = textureLoad(depth_texture, vec2<i32>(in.position.xy), 0);
 #endif
+
+    // Orthographic rays require per-pixel parallel origins. Until the pass
+    // carries those explicitly, leave the image unchanged rather than fan
+    // rays from the camera position.
+    if view.clip_from_view[3].w == 1.0 {
+        return vec4(scene, 1.0);
+    }
 
     let plane = volume.sea.x;
     let camera_y = volume.sea.y;
@@ -64,17 +89,19 @@ fn fragment(
     if raw_depth > 0.0 {
         let world = position_ndc_to_world(frag_coord_to_ndc(vec4(in.position.xy, raw_depth, 1.0)));
         t_scene = min(length(world - camera), PATH_LENGTH_MAX);
-        scene *= mesh_incident_transmittance(
-            volume.extinction.rgb,
-            max(plane - world.y, 0.0),
-        );
+        if volume.environment.y > 0.5 {
+            scene *= mesh_incident_transmittance(
+                volume.extinction.rgb,
+                max(plane - world.y, 0.0),
+            );
+        }
     }
     let t_surface = intersect_surface_metres(camera, rd_world, PATH_LENGTH_MAX, plane);
     var t_end = min(t_scene, PATH_LENGTH_MAX);
     if rd_world.y > 0.0 && raw_depth <= 0.0 {
-        // No mesh hit looking up: integrate to the mean plane and do not
-        // treat the sky as in-water radiance. A surface hit keeps its
-        // underside colour and path length.
+        // With no depth hit, stop at the mean plane and never integrate sky
+        // as underwater radiance. A real displaced surface hit remains the
+        // nearest endpoint so crest and trough underside shading is retained.
         t_end = min(t_end, t_surface);
         scene = vec3(0.0);
     }

@@ -1,11 +1,27 @@
-#import bevy_aqua_core::waves_sample::{CascadeLayout, LOD_COUNT}
-
 const FFT_RESOLUTION: u32 = 256u;
+const LOD_COUNT: u32 = 5u;
 const ATTENUATION_BINS: u32 = 4u;
 const FIELD_LAYERS: u32 = LOD_COUNT * ATTENUATION_BINS;
 const GRAVITY: f32 = 9.81;
 const CHOP: f32 = 0.8;
 
+struct CascadeParams {
+    center: vec2<f32>,
+    scale: f32,
+    texture_res: f32,
+    inv_texture_res: f32,
+    texel_width: f32,
+    weight: f32,
+    max_wavelength: f32,
+}
+struct CascadeLayout {
+    cascades: array<CascadeParams, 6>,
+    center: vec4<f32>,
+    // XY bed-map first-texel world origin, ZW inverse world extent.
+    bed_transform: vec4<f32>,
+    // X height minimum, Y height span (negative = no bed map), Z sea level.
+    bed_range: vec4<f32>,
+}
 struct FftUniform {
     cascade_layout: CascadeLayout,
     params: vec4<f32>,
@@ -49,15 +65,18 @@ fn evolve(@builtin(global_invocation_id) id: vec3<u32>) {
     let positive_phase = vec2(cos(phase), sin(phase));
     var height = complex_multiply(h0, negative_phase)
         + complex_multiply(conjugate(h0_mirror), positive_phase);
-    // Keep each Fourier component in a narrow quarter-octave field. Resolve can then
+    // Keep each Fourier component in one logarithmic field. Resolve can then
     // apply local half-wavelength attenuation before summing the fields.
     if bins == 1u {
         // Single-bin deep-water path keeps every component; DC stays suppressed.
         if k_length <= 0.0 { height = vec2(0.0); }
     } else if k_length > 0.0 {
         let wavelength = 2.0 * 3.141592653589793 / k_length;
-        let octave = log2(wavelength / (0.5 * cascade.max_wavelength));
-        let component_bin = min(u32(max(floor(octave * f32(ATTENUATION_BINS)), 0.0)),
+        let minimum = 0.5 * cascade.max_wavelength;
+        let maximum = select(cascade.max_wavelength, period / 4.0,
+            cascade_index == LOD_COUNT - 1u);
+        let fraction = log2(wavelength / minimum) / log2(maximum / minimum);
+        let component_bin = min(u32(max(floor(fraction * f32(ATTENUATION_BINS)), 0.0)),
             ATTENUATION_BINS - 1u);
         if component_bin != attenuation_bin { height = vec2(0.0); }
     } else {

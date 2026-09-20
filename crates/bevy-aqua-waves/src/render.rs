@@ -269,8 +269,9 @@ fn prepare_bind_groups(
     let Some(bed_gpu) = bed::gpu_image(bed.as_deref(), &fallback, &images) else {
         return;
     };
-    let (Some(output), Some(raw), Some(bed), Some(scratch_a), Some(scratch_b)) = (
+    let (Some(output), Some(surface), Some(raw), Some(bed), Some(scratch_a), Some(scratch_b)) = (
         images.get(&frame.output),
+        images.get(&frame.surface),
         images.get(&frame.raw),
         Some(bed_gpu),
         images.get(&frame.scratch_a),
@@ -315,25 +316,6 @@ fn prepare_bind_groups(
     }
     let uniform = uniform.as_ref().unwrap();
     let fft_uniform = fft_uniform.as_ref().unwrap();
-    let lod_layers = LOD_COUNT as u32;
-    let displacement_sampled = cascade_array_view(
-        &output.texture,
-        0,
-        lod_layers,
-        TextureUsages::TEXTURE_BINDING,
-    );
-    let displacement_storage = cascade_array_view(
-        &output.texture,
-        0,
-        lod_layers,
-        TextureUsages::STORAGE_BINDING,
-    );
-    let surface_storage = cascade_array_view(
-        &output.texture,
-        lod_layers,
-        lod_layers,
-        TextureUsages::STORAGE_BINDING,
-    );
     // Registers one bind group built from a table row's sequential layout.
     macro_rules! group {
         ($key:expr, $label:expr, $entries:expr) => {
@@ -377,7 +359,7 @@ fn prepare_bind_groups(
         &BindGroupEntries::sequential((
             &scratch_a.texture_view,
             &scratch_b.texture_view,
-            &displacement_storage
+            &output.texture_view
         ))
     );
     group!(
@@ -424,24 +406,8 @@ fn prepare_bind_groups(
     group!(
         "surface",
         SURFACE,
-        &BindGroupEntries::sequential((&displacement_sampled, &surface_storage, fft_uniform,))
+        &BindGroupEntries::sequential((&output.texture_view, &surface.texture_view, fft_uniform))
     );
-}
-
-fn cascade_array_view(
-    texture: &Texture,
-    base_array_layer: u32,
-    array_layer_count: u32,
-    usage: TextureUsages,
-) -> TextureView {
-    texture.create_view(&TextureViewDescriptor {
-        format: Some(TextureFormat::Rgba16Float),
-        dimension: Some(TextureViewDimension::D2Array),
-        usage: Some(usage),
-        base_array_layer,
-        array_layer_count: Some(array_layer_count),
-        ..default()
-    })
 }
 
 fn cascade_grid(layers: u32) -> [u32; 3] {

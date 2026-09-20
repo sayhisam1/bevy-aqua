@@ -21,17 +21,19 @@
     view_transformations::position_world_to_clip,
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
-#import bevy_aqua_core::waves_sample::{
-    CascadeLayout,
-    CascadeParams,
-    lod_alpha,
-}
 
+// The six-element array is fixed uniform ABI; active LOD count comes from the uniform.
+const CASCADE_COUNT: u32 = 6u;
 const VERTEX_SNAP_MULTIPLIER: f32 = 2.0;
 const COARSE_GRID_MULTIPLIER: f32 = 4.0;
+const LOD_TRANSITION_START: f32 = 1.0;
+// Crest 0.4 morph fade at eight vertices per 64-vertex tile.
+const MORPH_BLACK_POINT: f32 = 0.05;
+const MORPH_FADE_SIDES: f32 = 2.0;
 const MORPH_INNER_RADIUS: f32 = 0.375;
 
 const GRID_CELL_CENTER: f32 = 0.5;
+const UV_CENTER: f32 = 0.5;
 const MIN_SAMPLE_WEIGHT: f32 = 0.001;
 const MIN_NORMAL_Y: f32 = 0.0001;
 const SAFE_LENGTH_SQUARED: f32 = 1e-8;
@@ -55,6 +57,25 @@ const CREST_SSS_MAXIMUM: f32 = 0.6;
 const CREST_SSS_RANGE: f32 = 0.12;
 const CREST_SSS_UNCOMPRESSED: f32 = CREST_SSS_MAXIMUM - CREST_SSS_RANGE;
 
+struct CascadeParams {
+    center: vec2<f32>,
+    scale: f32,
+    texture_res: f32,
+    inv_texture_res: f32,
+    texel_width: f32,
+    weight: f32,
+    max_wavelength: f32,
+}
+
+struct CascadeLayout {
+    cascades: array<CascadeParams, CASCADE_COUNT>,
+    center: vec4<f32>,
+    // XY bed-map first-texel world origin, ZW inverse world extent.
+    bed_transform: vec4<f32>,
+    // X height minimum, Y height span (negative = no bed map), Z sea level.
+    bed_range: vec4<f32>,
+}
+
 struct PlanarReflectionView {
     view_projection: mat4x4<f32>,
     level: f32,
@@ -75,29 +96,35 @@ struct PlanarReflectionSample {
 const PLANAR_PROJECTION_GUARD: f32 = 0.03;
 
 struct SurfaceParams {
+    deep_color: vec4<f32>,
+    grazing_color: vec4<f32>,
+    shallow_color: vec4<f32>,
     fresnel: vec4<f32>,
     reflection: vec4<f32>,
     sun: vec4<f32>,
     debug: vec4<f32>,
+    /// rgb: extinction; w: particle scatter scale.
     fog_density: vec4<f32>,
-    scatter_tint: vec4<f32>,
     sea_floor: vec4<f32>,
     sss_tint: vec4<f32>,
+    /// Underwater particle scatter tint (rgb) and HG asymmetry (w).
+    medium_scatter: vec4<f32>,
     sss: vec4<f32>,
     detail: vec4<f32>,
     capillary: vec4<f32>,
     foam: vec4<f32>,
     advection: vec4<f32>,
     /// x/y: configurable far-tier start/end distances in metres.
-    /// z reserved; w: Henyey-Greenstein `g`.
     far_tier: vec4<f32>,
     /// Strength, metres per cell, metres per second, and maximum depth in metres.
     caustics: vec4<f32>,
+    wave_slope_variance: array<vec4<f32>, 2>,
 }
 
 /// Localized-water extent controls; mirrors lod::BodyParams. flags.x is 1.0
 /// for bounded bodies: the vertex stage skips camera snap/morph and the
-/// fragment stage culls against extent.xy (centre) and extent.w (radius).
+/// fragment stage culls against the world-axis square whose centre is
+/// extent.xy and whose half-extent is extent.w.
 struct BodyParams {
     flags: vec4<f32>,
     extent: vec4<f32>,
@@ -105,10 +132,9 @@ struct BodyParams {
     aabb_size: vec4<f32>,
     /// rgb: per-channel Beer-Lambert extinction in 1/m; w: optics enable.
     optics_a: vec4<f32>,
-    /// x: scatter-scale for particle σs; y: sun roughness; z: plain Schlick
-    /// flag; w: Henyey-Greenstein `g`.
+    /// x: scatter-endpoint scale; y: direct-light roughness; w: HG asymmetry.
     optics_b: vec4<f32>,
-    /// rgb: particle scatter chromaticity; w reserved.
+    /// rgb: medium scatter tint; w reserved.
     optics_c: vec4<f32>,
 }
 
@@ -123,6 +149,7 @@ struct BodyParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(8) var foam_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(9) var foam_pattern: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(10) var foam_pattern_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(11) var fft_surface: texture_2d_array<f32>;
 /// Global water fields: region mapping, per-slot body parameters, and the
 /// baked level/slot + flow textures. Mirrors fields::FieldParams.
 const MAX_BODIES: u32 = 16u;
@@ -144,10 +171,14 @@ struct FieldParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(21) var reflection_b: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(22) var<uniform> planar_reflections: PlanarReflectionParams;
 
+@group(#{MATERIAL_BIND_GROUP}) @binding(23) var caustics_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(24) var caustics_sampler: sampler;
+
 fn sample_planar_reflection(
     world_position: vec3<f32>,
     surface_level: f32,
     surface_normal: vec3<f32>,
+    roughness: f32,
 ) -> PlanarReflectionSample {
     if planar_reflections.view_count == 0u {
         return PlanarReflectionSample(vec3(0.0), 0.0);
@@ -159,6 +190,11 @@ fn sample_planar_reflection(
         index = 1u;
     }
     let view = planar_reflections.views[index];
+    // Match CPU level deduplication: another water elevation is not a
+    // valid approximation. Unrepresented bodies keep the environment.
+    if abs(surface_level - view.level) > 0.01 {
+        return PlanarReflectionSample(vec3(0.0), 0.0);
+    }
     let clip = view.view_projection * vec4(world_position, 1.0);
     if clip.w <= 0.0 {
         return PlanarReflectionSample(vec3(0.0), 0.0);
@@ -185,28 +221,36 @@ fn sample_planar_reflection(
         planar_reflections.distortion + max(half_texel.x, half_texel.y),
         projected_edge,
     );
-    var uv = projected_uv
-        + vec2(surface_normal.x, -surface_normal.z)
-            * planar_reflections.distortion * distortion_guard;
-    uv = clamp(uv, half_texel, vec2(1.0) - half_texel);
-    var sample = textureSampleLevel(
-        reflection_a,
-        reflection_sampler,
-        uv,
-        0.0,
+    // Depth-independent angular warp in the mirror's image basis, not a
+    // world-XZ swizzle. This is the homogeneous projection differential
+    // multiplied by clip.w; 0.5 converts NDC to UV and UV Y points down.
+    // Strength remains artistic, not a reflected-ray intersection distance.
+    let slope = vec3(surface_normal.x, 0.0, surface_normal.z);
+    let delta = view.view_projection * vec4(slope, 0.0);
+    let projected_slope = 0.5 * vec2(
+        delta.x - ndc.x * delta.w,
+        -delta.y + ndc.y * delta.w,
     );
+    var uv = projected_uv + projected_slope
+        * planar_reflections.distortion * distortion_guard;
+    uv = clamp(uv, half_texel, vec2(1.0) - half_texel);
+    // Approximate screen-space box footprint, NOT GGX convolution. Squared
+    // perceptual roughness controls a radius of up to 2.5% of target height.
+    // LOD selects prefiltered dense averages; no widely separated sparse taps.
+    let r = clamp(roughness, 0.0, 1.0);
+    let footprint = max(1.0, 2.0 * r * r * 0.025 * dimensions.y);
+    var level_count = textureNumLevels(reflection_a);
+    if index == 1u { level_count = textureNumLevels(reflection_b); }
+    let lod = clamp(log2(footprint), 0.0, f32(level_count - 1u));
+    var sample = textureSampleLevel(reflection_a, reflection_sampler, uv, lod);
     if index == 1u {
-        sample = textureSampleLevel(
-            reflection_b,
-            reflection_sampler,
-            uv,
-            0.0,
-        );
+        sample = textureSampleLevel(reflection_b, reflection_sampler, uv, lod);
     }
-    // Deferred HDR alpha is not a validity signal. In-bounds projected pixels
-    // remain fully planar; only displaced projections beyond the target feather.
-    let weight = 1.0 - smoothstep(0.0, PLANAR_PROJECTION_GUARD, max(outside, 0.0));
-    return PlanarReflectionSample(sample.rgb, weight);
+    // Exported alpha is depth-derived coverage, never deferred HDR alpha.
+    // Unpremultiply once after filtering so silhouette edges retain their color.
+    let coverage = clamp(sample.a, 0.0, 1.0);
+    let weight = coverage * (1.0 - smoothstep(0.0, PLANAR_PROJECTION_GUARD, max(outside, 0.0)));
+    return PlanarReflectionSample(sample.rgb / max(coverage, 1e-6), weight);
 }
 
 // Effective current for wave advection at the current invocation: the
@@ -245,11 +289,12 @@ var<private> invocation_optics_a: vec4<f32> = vec4(0.0);
 var<private> invocation_optics_b: vec4<f32> = vec4(0.0);
 
 /// Per-body water optics: extinction replaces the ocean Beer-Lambert
-/// coefficients, scatter_scale is particle load, and scatter_tint is haze
-/// chromaticity for the shared medium.
+/// coefficients and the scatter endpoint scales down, so shallow fresh water
+/// reads clear over its bed instead of ocean-teal.
 var<private> body_extinction: vec3<f32> = vec3(0.0);
 var<private> body_scatter_scale: f32 = 1.0;
-var<private> body_scatter_tint: vec3<f32> = vec3(0.85, 1.0, 1.22);
+var<private> underwater_scatter_scale: f32 = 1.0;
+var<private> body_scatter_tint: vec3<f32> = vec3(1.0);
 var<private> body_scattering_asymmetry: f32 = 0.8;
 
 /// Baked flow sample at the current fragment (xy: current m/s, z: signed
@@ -296,17 +341,18 @@ fn set_fragment_river(sample: vec4<f32>) {
     fragment_river = sample;
 }
 
-/// Fragment entry: records the effective Beer-Lambert extinction, particle
-/// scatter scale and tint, and Henyey-Greenstein `g` after fresh-water optics
-/// override.
+/// Fragment entry: records the effective Beer-Lambert extinction and the
+/// scatter-endpoint scale after fresh-water optics override.
 fn set_body_optics(
     extinction: vec3<f32>,
     scatter_scale: f32,
+    medium_scatter_scale: f32,
     scatter_tint: vec3<f32>,
     scattering_asymmetry: f32,
 ) {
     body_extinction = extinction;
     body_scatter_scale = scatter_scale;
+    underwater_scatter_scale = medium_scatter_scale;
     body_scatter_tint = scatter_tint;
     body_scattering_asymmetry = scattering_asymmetry;
 }
@@ -322,6 +368,10 @@ fn invocation_extinction() -> vec3<f32> {
 
 fn invocation_scatter_scale() -> f32 {
     return body_scatter_scale;
+}
+
+fn invocation_underwater_scatter_scale() -> f32 {
+    return underwater_scatter_scale;
 }
 
 fn invocation_scatter_tint() -> vec3<f32> {
@@ -345,11 +395,6 @@ fn invocation_ripple() -> f32 {
 }
 
 
-// Wave content advects at `surface.advection.xy` metres per second. A
-// sampling-space shift is exact Doppler advection for both spectra:
-// sampling at `x - u * t` turns every component's phase into
-// `(k . x) - (omega + k . u) * t`. Snap/transition, depth lookups, and foam
-// gating stay world-anchored.
 fn advected_world(world_xz: vec2<f32>) -> vec2<f32> {
     return world_xz - effective_flow * effective_time;
 }
@@ -363,7 +408,19 @@ fn field_uv(world_xz: vec2<f32>) -> vec2<f32> {
 
 /// rg: surface level, one-based body slot (0 = unclaimed).
 fn sample_field_level(world_xz: vec2<f32>) -> vec2<f32> {
-    return textureSampleLevel(field_maps, field_sampler, field_uv(world_xz), 0, 0.0).xy;
+    let uv = field_uv(world_xz);
+    let level = textureSampleLevel(field_maps, field_sampler, uv, 0, 0.0).x;
+    // Slot IDs are categorical: interpolating slots 0 and 2 invents body 1.
+    // Keep continuous levels filtered, but select ownership at the nearest
+    // texel centre. Clamp explicitly to match the field sampler at map edges.
+    let dimensions = vec2<i32>(textureDimensions(field_maps, 0));
+    let coord = clamp(
+        vec2<i32>(floor(uv * vec2<f32>(dimensions))),
+        vec2(0),
+        dimensions - vec2(1),
+    );
+    let slot = textureLoad(field_maps, coord, 0, 0).y;
+    return vec2(level, slot);
 }
 
 /// rgb: flow m/s; z: signed bank margin in metres; w: speed m/s.
@@ -397,6 +454,16 @@ fn far_tier_weight(base_world_position: vec3<f32>) -> f32 {
     );
 }
 
+fn lod_alpha(world_xz: vec2<f32>, cascade: CascadeParams) -> f32 {
+    let offset = abs(world_xz - cascade_layout.center.xy);
+    // Chebyshev distance matches the square LOD rings; Euclidean `length` is wrong here.
+    let chebyshev_distance = max(offset.x, offset.y);
+    let raw_alpha = chebyshev_distance / cascade.scale - LOD_TRANSITION_START;
+    let black_point = MORPH_BLACK_POINT;
+    let fade_width = 1.0 - MORPH_FADE_SIDES * black_point;
+    return clamp((raw_alpha - black_point) / fade_width, 0.0, 1.0);
+}
+
 fn snap_and_transition(
     world_xz: vec2<f32>,
     object_xz: vec2<f32>,
@@ -405,7 +472,7 @@ fn snap_and_transition(
     let grid_width = cascade.texel_width;
     let snap_width = VERTEX_SNAP_MULTIPLIER * grid_width;
     var transitioned = world_xz - fract(object_xz / snap_width) * snap_width;
-    let alpha = lod_alpha(transitioned, cascade, cascade_layout);
+    let alpha = lod_alpha(transitioned, cascade);
 
     let coarse_grid = COARSE_GRID_MULTIPLIER * grid_width;
     let offset = fract(transitioned / coarse_grid) - vec2(GRID_CELL_CENTER);
@@ -416,6 +483,41 @@ fn snap_and_transition(
         transitioned.y += offset.y * alpha * coarse_grid;
     }
     return vec3(transitioned, alpha);
+}
+
+fn world_to_uv(world_xz: vec2<f32>, cascade: CascadeParams) -> vec2<f32> {
+    let coverage = cascade.texel_width * cascade.texture_res;
+    return (world_xz - cascade.center) / coverage + vec2(UV_CENTER);
+}
+
+// Wave content advects at `surface.advection.xy` metres per second. A
+// sampling-space shift is exact Doppler advection for both spectra:
+// sampling at `x - u * t` turns every component's phase into
+// `(k . x) - (omega + k . u) * t`. Snap/transition, depth lookups, and foam
+// gating stay world-anchored.
+fn sample_displacement(
+    world_xz: vec2<f32>,
+    lod: u32,
+    alpha: f32,
+) -> vec3<f32> {
+    let sampled_xz = advected_world(world_xz);
+    let smaller = cascade_layout.cascades[lod];
+    let bigger = cascade_layout.cascades[lod + 1u];
+    let smaller_weight = (1.0 - alpha) * smaller.weight;
+    let bigger_weight = (1.0 - smaller_weight) * bigger.weight;
+    var displacement = vec3(0.0);
+
+    if smaller_weight > MIN_SAMPLE_WEIGHT {
+        let uv = world_to_uv(sampled_xz, smaller);
+        displacement += smaller_weight
+            * textureSampleLevel(lod_data, lod_sampler, uv, i32(lod), 0.0).xyz;
+    }
+    if bigger_weight > MIN_SAMPLE_WEIGHT {
+        let uv = world_to_uv(sampled_xz, bigger);
+        displacement += bigger_weight
+            * textureSampleLevel(lod_data, lod_sampler, uv, i32(lod + 1u), 0.0).xyz;
+    }
+    return displacement;
 }
 
 fn flow_frame(world_xz: vec2<f32>) -> vec2<f32> {
@@ -438,33 +540,20 @@ fn capillary_resolved_weight(world_xz: vec2<f32>) -> f32 {
     );
 }
 
-// GodotOceanWaves `water.gdshader`: bounded GGX distribution and its Smith
-// masking-shadowing approximation. Aqua applies Fresnel later in Crest's
-// reflection composition, so this returns the remaining direct-sun factor.
-fn godot_fresnel(view_alignment: f32) -> f32 {
-    // Cubemap-only oceans preserve the accepted roughness-damped Godot curve.
-    // Planar mode uses physical dielectric Schlick: roughness broadens the
-    // reflected lobe but must not cap grazing-angle energy, or a bright sky
-    // leaves distant water saturated navy. Calm authored bodies use the same
-    // plain response in either reflection mode.
+// Authored roughness controls the direct-light lobe, never the amount of
+// energy at grazing incidence. Negative per-body values inherit the ocean.
+fn invocation_sun_roughness() -> f32 {
     let body_active = invocation_bounded > 0.5 && invocation_optics_a.w > 0.5;
-    let sun_roughness = select(
+    return clamp(select(
         surface.sun.y,
         invocation_optics_b.y,
         body_active && invocation_optics_b.y >= 0.0,
-    );
-    let plain_schlick = planar_reflections.view_count > 0u
-        || (body_active && invocation_optics_b.z > 0.5);
-    let exponent = select(
-        surface.fresnel.y * exp(-2.69 * sun_roughness),
-        surface.fresnel.y,
-        plain_schlick,
-    );
-    let damping = select(
-        1.0 + 22.7 * pow(sun_roughness, 1.5),
-        1.0,
-        plain_schlick,
-    );
-    let rough = pow(max(0.0, 1.0 - view_alignment), exponent) / damping;
-    return mix(rough, 1.0, surface.fresnel.x);
+    ), 0.001, 1.0);
+}
+
+// Dielectric Schlick is independent of the available reflection source.
+// Keep the historical function name for the shared shader import contract.
+fn godot_fresnel(view_alignment: f32) -> f32 {
+    let grazing = pow(clamp(1.0 - view_alignment, 0.0, 1.0), surface.fresnel.y);
+    return mix(grazing, 1.0, surface.fresnel.x);
 }

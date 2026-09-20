@@ -45,6 +45,8 @@ pub(super) fn setup(
 fn spray_effect() -> EffectAsset {
     let writer = ExprWriter::new();
     let strength = writer.add_property("strength", 1.0_f32.into());
+    let normal = writer.add_property("normal", Vec3::Y.into());
+    let current = writer.add_property("current", Vec3::ZERO.into());
     let position = SetPositionSphereModifier {
         center: writer.lit(Vec3::ZERO).expr(),
         radius: writer.lit(0.20).expr(),
@@ -55,11 +57,16 @@ fn spray_effect() -> EffectAsset {
         Attribute::LIFETIME,
         (writer.lit(0.35) + writer.rand(ScalarType::Float) * writer.lit(0.55)).expr(),
     );
+    // Reuse one vec3 draw: flat/no-current keeps the original random samples,
+    // upward speed [1.8, 2.8), and world-XZ jitter [-1, 1) per component.
+    let random = writer.rand(VectorType::VEC3F);
     let velocity = SetAttributeModifier::new(
         Attribute::VELOCITY,
-        ((writer.rand(VectorType::VEC3F) * writer.lit(Vec3::new(2.0, 1.0, 2.0))
-            + writer.lit(Vec3::new(-1.0, 1.8, -1.0)))
-            * writer.prop(strength))
+        (writer.prop(current)
+            + (writer.prop(normal) * (writer.lit(1.8) + random.clone().y())
+                + random * writer.lit(Vec3::new(2.0, 0.0, 2.0))
+                - writer.lit(Vec3::new(1.0, 0.0, 1.0)))
+                * writer.prop(strength))
         .expr(),
     );
     let gravity = AccelModifier::new(writer.lit(Vec3::new(0.0, -5.5, 0.0)).expr());
@@ -131,6 +138,58 @@ fn spray_texture() -> Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_init_uses_vec3_properties_and_one_shared_random_draw() {
+        let effect = spray_effect();
+        assert_eq!(
+            effect
+                .properties()
+                .iter()
+                .find(|p| p.name() == "normal")
+                .unwrap()
+                .default_value(),
+            &Vec3::Y.into()
+        );
+        assert_eq!(
+            effect
+                .properties()
+                .iter()
+                .find(|p| p.name() == "current")
+                .unwrap()
+                .default_value(),
+            &Vec3::ZERO.into()
+        );
+        let mut module = effect.module().clone();
+        let property_layout = effect.property_layout();
+        let particle_layout = effect.particle_layout();
+        let mut shader =
+            ShaderWriter::new(ModifierContext::Init, &property_layout, &particle_layout);
+        // Position, age, lifetime precede the production velocity initializer.
+        effect
+            .init_modifiers()
+            .nth(3)
+            .unwrap()
+            .apply(&mut module, &mut shader)
+            .unwrap();
+        assert_eq!(shader.main_code.matches("frand3()").count(), 1);
+        assert_eq!(shader.main_code.matches("frand()").count(), 0);
+        assert!(
+            shader
+                .main_code
+                .contains("properties[properties_array_index].normal")
+        );
+        assert!(
+            shader
+                .main_code
+                .contains("properties[properties_array_index].current")
+        );
+        assert!(
+            shader
+                .main_code
+                .contains("properties[properties_array_index].strength")
+        );
+    }
 
     #[test]
     fn spray_texture_has_a_soft_edge() {

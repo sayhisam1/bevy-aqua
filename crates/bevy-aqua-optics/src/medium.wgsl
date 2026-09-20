@@ -23,8 +23,9 @@ const PARTICLE_SCATTER: f32 = 0.02;
 const RAYLEIGH: vec3<f32> = vec3(0.00095, 0.00193, 0.00456);
 
 fn henyey_greenstein(l_dot_rd: f32, g: f32) -> f32 {
-    let denom = 1.0 + g * g - 2.0 * g * l_dot_rd;
-    return FRAC_4_PI * (1.0 - g * g) / (denom * sqrt(denom));
+    let safe_g = clamp(g, -0.99, 0.99);
+    let denom = 1.0 + safe_g * safe_g - 2.0 * safe_g * l_dot_rd;
+    return FRAC_4_PI * (1.0 - safe_g * safe_g) / (denom * sqrt(denom));
 }
 
 fn phase_rayleigh(cos_theta: f32) -> f32 {
@@ -113,16 +114,23 @@ fn attenuate_underwater_scene(
     return scene * mesh_incident_transmittance(sigma, max(surface_y - hit_y, 0.0));
 }
 
-fn refract_air_to_water(l_air: vec3<f32>) -> vec3<f32> {
-    let sin2_air = max(1.0 - l_air.y * l_air.y, 0.0);
-    let sin2_water = sin2_air / (N_WATER * N_WATER);
-    let cos_water = sqrt(max(1.0 - sin2_water, 0.0));
-    let horiz_len = length(l_air.xz);
-    var xz = vec2(0.0);
-    if horiz_len > 1e-8 {
-        xz = l_air.xz / horiz_len * sqrt(sin2_water);
+fn refract_air_to_water_oriented(l_air_input: vec3<f32>, up_input: vec3<f32>) -> vec3<f32> {
+    let up = normalize(up_input);
+    let l_air = normalize(l_air_input);
+    let cos_air = clamp(dot(l_air, up), 0.0, 1.0);
+    let tangent = l_air - cos_air * up;
+    let tangent_length = length(tangent);
+    let sin_water = tangent_length / N_WATER;
+    let cos_water = sqrt(max(1.0 - sin_water * sin_water, 0.0));
+    var tangent_direction = vec3(0.0);
+    if tangent_length > 1e-8 {
+        tangent_direction = tangent / tangent_length;
     }
-    return vec3(xz.x, cos_water, xz.y);
+    return tangent_direction * sin_water + up * cos_water;
+}
+
+fn refract_air_to_water(l_air: vec3<f32>) -> vec3<f32> {
+    return refract_air_to_water_oriented(l_air, vec3(0.0, 1.0, 0.0));
 }
 
 // Surface observer: same camera-ray integral as underwater, then n² into air.
@@ -160,17 +168,70 @@ fn downwelling_integral(
     irradiance: vec3<f32>,
 ) -> vec3<f32> {
     let ly = max(l_y, MIN_L_Y);
-    let i0 = irradiance * exp(-sigma * (d0 / ly));
-    let kappa = sigma * (1.0 - rd_y / ly);
+    let safe_sigma = max(sigma, vec3(0.0));
+    let i0 = irradiance * exp(-safe_sigma * (d0 / ly));
+    let kappa = safe_sigma * (1.0 - rd_y / ly);
     let optical = clamp(kappa * t, vec3(-OPTICAL_CLAMP), vec3(OPTICAL_CLAMP));
-    let use_series = abs(kappa) <= vec3(KAPPA_EPS);
+    // Branch on the dimensionless optical interval. A constant `t` branch
+    // jumps at long paths; the series remains continuous through x = 0.
+    let use_series = abs(optical) <= vec3(KAPPA_EPS);
     let kappa_safe = select(kappa, vec3(1.0), use_series);
+    let series = vec3(t) * (vec3(1.0) - optical * 0.5 + optical * optical / 6.0);
     let integral = select(
         (vec3(1.0) - exp(-optical)) / kappa_safe,
-        vec3(t),
+        series,
         use_series,
     );
     return i0 * integral;
+}
+
+fn medium_radiance_oriented(
+    scene: vec3<f32>,
+    rd: vec3<f32>,
+    t_end: f32,
+    d0: f32,
+    sigma_t: vec3<f32>,
+    scatter_scale: f32,
+    scatter_tint: vec3<f32>,
+    g: f32,
+    up_input: vec3<f32>,
+) -> vec3<f32> {
+    if t_end < 1e-4 {
+        return scene;
+    }
+
+    let up = normalize(up_input);
+    let safe_sigma_t = max(sigma_t, vec3(0.0));
+    let sigma_p = PARTICLE_SCATTER * max(scatter_scale, 0.0) * max(scatter_tint, vec3(0.0));
+    let sigma_s = min(safe_sigma_t, sigma_p + RAYLEIGH);
+    let exposure = view.exposure;
+    let rd_up = dot(rd, up);
+
+    var inscatter = vec3<f32>(0.0);
+    let directional_light_count = lights.n_directional_lights;
+    for (var light_index = 0u; light_index < directional_light_count; light_index += 1u) {
+        let light = &lights.directional_lights[light_index];
+        let l_air = normalize((*light).direction_to_light.xyz);
+        let cos_air = clamp(dot(l_air, up), 0.0, 1.0);
+        if cos_air <= 0.0 {
+            continue;
+        }
+        let e_air = (*light).color.rgb * exposure;
+        let l_water = refract_air_to_water_oriented(l_air, up);
+        let e_water = e_air * (1.0 - fresnel_air_to_water(cos_air));
+        let phase = mixed_phase(dot(l_water, rd), sigma_p, g);
+        inscatter += sigma_s * downwelling_integral(
+            safe_sigma_t,
+            t_end,
+            rd_up,
+            dot(l_water, up),
+            d0,
+            e_water * phase,
+        );
+    }
+
+    let transmittance = exp(-safe_sigma_t * t_end);
+    return scene * transmittance + inscatter;
 }
 
 fn medium_radiance(
@@ -183,36 +244,15 @@ fn medium_radiance(
     scatter_tint: vec3<f32>,
     g: f32,
 ) -> vec3<f32> {
-    if t_end < 1e-4 {
-        return scene;
-    }
-
-    let sigma_p = PARTICLE_SCATTER * max(scatter_scale, 0.0) * max(scatter_tint, vec3(0.0));
-    let sigma_s = min(sigma_t, sigma_p + RAYLEIGH);
-    let exposure = view.exposure;
-
-    var inscatter = vec3<f32>(0.0);
-    let directional_light_count = lights.n_directional_lights;
-    for (var light_index = 0u; light_index < directional_light_count; light_index += 1u) {
-        let light = &lights.directional_lights[light_index];
-        let l_air = (*light).direction_to_light.xyz;
-        if l_air.y <= 0.0 {
-            continue;
-        }
-        let e_air = (*light).color.rgb * exposure;
-        let l_water = refract_air_to_water(l_air);
-        let e_water = e_air * (1.0 - fresnel_air_to_water(l_air.y));
-        let phase = mixed_phase(dot(l_water, rd), sigma_p, g);
-        inscatter += sigma_s * downwelling_integral(
-            sigma_t,
-            t_end,
-            rd.y,
-            l_water.y,
-            d0,
-            e_water * phase,
-        );
-    }
-
-    let transmittance = exp(-sigma_t * t_end);
-    return scene * transmittance + inscatter;
+    return medium_radiance_oriented(
+        scene,
+        rd,
+        t_end,
+        d0,
+        sigma_t,
+        scatter_scale,
+        scatter_tint,
+        g,
+        vec3(0.0, 1.0, 0.0),
+    );
 }

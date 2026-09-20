@@ -6,8 +6,7 @@
 
 #import bevy_pbr::mesh_view_bindings::globals
 
-#import bevy_aqua_core::waves_sample::{lod_alpha, world_to_uv}
-#import aqua::cascade::{CREST_SSS_MAXIMUM, CREST_SSS_RANGE, MIN_NORMAL_Y, MIN_SAMPLE_WEIGHT, advected_world, cascade_layout, detail_normal, detail_sampler, flow_frame, lod_count, lod_data, lod_sampler, screen_texture_lod, surface}
+#import aqua::cascade::{CREST_SSS_MAXIMUM, CREST_SSS_RANGE, MIN_NORMAL_Y, MIN_SAMPLE_WEIGHT, advected_world, cascade_layout, detail_normal, detail_sampler, fft_surface, flow_frame, lod_alpha, lod_count, lod_data, lod_sampler, screen_texture_lod, surface, world_to_uv}
 
 const NORMAL_DIRECTION_0: vec2<f32> = vec2(0.94, 0.34);
 const NORMAL_DIRECTION_1: vec2<f32> = vec2(-0.85, -0.53);
@@ -17,21 +16,11 @@ const CAPILLARY_ROTATION: mat2x2<f32> = mat2x2(
     vec2(-0.573576, 0.819152),
 );
 
-// Mean square of the decoded WaveNormals.png XY slope. Resolved fade energy
-// moves into unresolved roughness instead of disappearing with distance.
+// Mean square of the decoded WaveNormals.png XY slope. Used to account for
+// mip-filtered detail and separately distance-faded capillary variance.
 const WAVE_NORMALS_SLOPE_VARIANCE: f32 = 0.05602466;
 const NORMAL_SCROLL_MULTIPLIER: f32 = 1.875;
 const NORMAL_SCROLL_POWER: f32 = 1.4;
-// Deterministic mean-square slope per owned wavelength octave. FFT values are
-// phase means 2 * sum(k^2 * |h0(k)|^2) for the shipped H0 realization; Gerstner values are
-// sums of 0.5 * (amplitude * wave_number)^2 for the shipped components.
-const FFT_JONSWAP_SLOPE_VARIANCE: array<f32, 5> = array(
-    0.06393624, 0.06369724, 0.06306524, 0.06170338, 0.06048288,
-);
-const GERSTNER_SLOPE_VARIANCE: array<f32, 5> = array(
-    0.0194041, 0.027484603, 0.015417861, 0.0066486476, 0.010458008,
-);
-
 fn direct_displacement(world_xz: vec2<f32>, lod: u32) -> vec3<f32> {
     let sampled_xz = advected_world(world_xz);
     let cascade = cascade_layout.cascades[lod];
@@ -44,20 +33,16 @@ fn direct_displacement(world_xz: vec2<f32>, lod: u32) -> vec3<f32> {
     ).xyz;
 }
 
-fn sample_fft_surface(uv: vec2<f32>, lod: u32) -> vec4<f32> {
-    return textureSampleLevel(
-        lod_data,
-        lod_sampler,
-        uv,
-        i32(lod) + i32(lod_count()),
-        0.0,
-    );
-}
-
 fn direct_fft_normal_cross(world_xz: vec2<f32>, lod: u32) -> vec3<f32> {
     let sampled_xz = advected_world(world_xz);
     let cascade = cascade_layout.cascades[lod];
-    return sample_fft_surface(world_to_uv(sampled_xz, cascade), lod).xyz;
+    return textureSampleLevel(
+        fft_surface,
+        lod_sampler,
+        world_to_uv(sampled_xz, cascade),
+        i32(lod),
+        0.0,
+    ).xyz;
 }
 
 fn sample_fft_normal_cross(world_xz: vec2<f32>, lod: u32, alpha: f32) -> vec3<f32> {
@@ -81,7 +66,7 @@ fn sample_fft_normal_cross(world_xz: vec2<f32>, lod: u32, alpha: f32) -> vec3<f3
 
 fn outer_cascade_weight(world_xz: vec2<f32>) -> f32 {
     let outer_lod = lod_count() - 1u;
-    return 1.0 - lod_alpha(world_xz, cascade_layout.cascades[outer_lod], cascade_layout);
+    return 1.0 - lod_alpha(world_xz, cascade_layout.cascades[outer_lod]);
 
 }
 fn far_displacement(world_xz: vec2<f32>) -> vec3<f32> {
@@ -124,9 +109,12 @@ fn far_normal_cross(world_xz: vec2<f32>) -> vec3<f32> {
 fn displacement_jacobian(world_xz: vec2<f32>, lod: u32) -> f32 {
     if surface.reflection.x > 0.5 {
         let cascade = cascade_layout.cascades[lod];
-        return sample_fft_surface(
+        return textureSampleLevel(
+            fft_surface,
+            lod_sampler,
             world_to_uv(advected_world(world_xz), cascade),
-            lod,
+            i32(lod),
+            0.0,
         ).w;
     }
     let texel_width = cascade_layout.cascades[lod].texel_width;

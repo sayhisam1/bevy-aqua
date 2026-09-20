@@ -11,7 +11,8 @@ use bevy_aqua_fft::BinSpec;
 pub(crate) use bevy_aqua_fft::SpectrumAuthoring;
 
 pub(crate) const RESOLUTION: u32 = lod::RESOLUTION;
-// Frequency bins per octave used for local shallow-water attenuation.
+// Log-frequency bins per cascade used for local shallow-water attenuation.
+// The final cascade spans five octaves; its four bins are wider.
 pub(crate) const ATTENUATION_BINS: u32 = 4;
 pub(crate) const FIELD_LAYERS: u32 = LOD_COUNT as u32 * ATTENUATION_BINS;
 
@@ -65,10 +66,17 @@ pub(crate) fn cumulative_height_bounds(
 fn cascade_specs(layout: &lod::GpuLayout) -> Vec<BinSpec> {
     layout.cascades[..LOD_COUNT]
         .iter()
-        .map(|cascade| BinSpec {
+        .enumerate()
+        .map(|(band, cascade)| BinSpec {
             texel_width: cascade.texel_width,
             texture_res: cascade.texture_res,
-            max_wavelength: cascade.max_wavelength,
+            min_wavelength: 0.5 * cascade.max_wavelength,
+            // Leave the core/analytic octave metadata and all texture periods alone.
+            max_wavelength: if band == LOD_COUNT - 1 {
+                cascade.texel_width * cascade.texture_res / 4.0
+            } else {
+                cascade.max_wavelength
+            },
         })
         .collect()
 }
@@ -82,7 +90,7 @@ pub(crate) struct Uniform {
     pub(crate) mode: Vec4,
 }
 
-// The quarter-octave bins apply depth-driven shoaling per half-wavelength band.
+// Logarithmic bins apply depth-driven shoaling across each spectral band.
 // Without shoaling or a bed map, each bin is exactly vec2(1.0), so one bin is
 // bit-equivalent.
 pub(crate) fn active_bin_count(shallow_water_attenuation: f32, terrain_absent: bool) -> u32 {

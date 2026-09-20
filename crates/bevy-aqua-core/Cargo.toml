@@ -19,3 +19,7 @@ bevy = { workspace = true, features = [
 
 [lints]
 workspace = true
+
+[features]
+default = []
+underwater = []

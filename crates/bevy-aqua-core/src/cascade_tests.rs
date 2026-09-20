@@ -26,14 +26,13 @@ fn uv_to_world(uv: Vec2, cascade: Cascade) -> Vec2 {
 fn body_params_abi_is_seven_full_vec4s() {
     // Full vec4 fields only: naga and encase disagree on smaller members
     // (the flow-advection uniform bug). flags, extent, aabb_min,
-    // aabb_size, optics_a, optics_b, and optics_c occupy bytes 0..112 in that
-    // order.
+    // aabb_size, optics_a, optics_b, and optics_c occupy bytes 0..112 in that order.
     assert_eq!(std::mem::size_of::<BodyParams>(), 112);
     let optics = crate::cascade::BodyOptics {
         extinction: Vec3::new(0.28, 0.16, 0.12),
         scatter_scale: 0.18,
-        scatter_tint: Vec3::new(0.85, 1.0, 1.22),
-        scattering_asymmetry: 0.8,
+        scatter_tint: Vec3::new(0.8, 1.0, 1.2),
+        scattering_asymmetry: 0.75,
         sun_roughness: 0.1,
     };
     let mut bytes = Vec::new();
@@ -59,8 +58,8 @@ fn body_params_abi_is_seven_full_vec4s() {
             -70.0, -5.0, 0.0, 0.0, //
             60.0, 50.0, 0.0, 0.0, //
             0.28, 0.16, 0.12, 1.0, //
-            0.18, 0.1, 1.0, 0.8, //
-            0.85, 1.0, 1.22, 0.0,
+            0.18, 0.1, 0.0, 0.75, // scatter, roughness, reserved, HG g
+            0.8, 1.0, 1.2, 0.0, // scatter tint, reserved
         ]
     );
 }
@@ -137,7 +136,6 @@ fn depth_gated_transmission_limits_residual_to_two_to_the_minus_ten() {
         let mut surface = SurfaceParams::default();
         surface.apply_optics(&optics);
         let density = surface.fog_density.truncate();
-        assert_eq!(surface.scatter_tint.truncate(), optics.scatter_tint);
         let minimum_extinction = density.min_element();
         let cutoff = 1024.0_f32.ln() / minimum_extinction;
         assert!(minimum_extinction.is_finite() && minimum_extinction > 0.0);
@@ -184,15 +182,106 @@ fn detail_mips_leave_constant_slopes_without_variance() {
 }
 
 #[test]
-fn make_texture_includes_displacement_and_surface_layers() {
-    let image = make_texture();
-    assert_eq!(
-        image.texture_descriptor.size.depth_or_array_layers,
-        CASCADE_LAYER_COUNT
-    );
-    let scratch = make_lod_scratch();
-    assert_eq!(
-        scratch.texture_descriptor.size.depth_or_array_layers,
-        LOD_COUNT as u32
-    );
+fn default_sun_floor_preserves_wave_roughness_and_body_inheritance() {
+    let surface = SurfaceParams::default();
+    assert_eq!(surface.sun, Vec4::new(1.0, 0.04, 0.0, 1.0));
+    assert_eq!(surface.reflection.y, 1.0);
+    assert_eq!(surface.reflection.w, 0.28);
+    assert_eq!(WaterOptics::CLEAR_FRESH.sun_roughness, 0.1);
+    assert!(WaterOptics::DEEP_OCEAN.sun_roughness < 0.0);
+}
+
+// boundary43: reference arithmetic plus actual resolved bounds and ABI wiring.
+// GPU execution of the composed shader is covered by the temporary native fixture.
+fn boundary43_distance(eye: Vec2, params: BodyParams) -> f32 {
+    ((eye - params.extent.xy()).abs() - Vec2::splat(params.extent.w))
+        .max(Vec2::ZERO)
+        .length()
+}
+
+#[test]
+fn boundary43_square_distance_and_shader_contract() {
+    let shader = include_str!("cascade/material.wgsl");
+    assert!(shader.contains("let distance_to_extent = length(max(\n            abs(view.world_position.xz - params.extent.xy) - vec2(params.extent.w),\n            vec2(0.0),\n        ));"));
+    assert!(shader.contains("if distance_to_extent > surface.far_tier.y {\n            discard;"));
+    let begin = shader.find("let bounded = slot > 0u;").unwrap();
+    let owner = shader[begin..]
+        .find("let params = owning_body(slot);")
+        .unwrap()
+        + begin;
+    let gate = shader[owner..].find("if bounded {").unwrap() + owner;
+    let distance = shader.find("let distance_to_extent =").unwrap();
+    assert!(gate < distance);
+    for (center, half, eye, expected, cull) in [
+        (Vec2::splat(450.0), 100.0, Vec2::ZERO, 494.97475, false),
+        (Vec2::splat(450.0), 102.0, Vec2::ZERO, 492.14633, false),
+        (Vec2::splat(600.0), 102.0, Vec2::ZERO, 704.2783, true),
+        (Vec2::new(612.0, 0.0), 100.0, Vec2::ZERO, 512.0, false),
+        (Vec2::new(613.0, 0.0), 100.0, Vec2::ZERO, 513.0, true),
+        (Vec2::splat(450.0), 100.0, Vec2::splat(450.0), 0.0, false),
+        (Vec2::splat(-450.0), 100.0, Vec2::ZERO, 494.97475, false),
+    ] {
+        let params = BodyParams::bounded(center, half, Vec2::ZERO, Vec2::ONE, false, None);
+        let distance = boundary43_distance(eye, params);
+        assert!((distance - expected).abs() < 0.001);
+        assert_eq!(distance > 512.0, cull);
+    }
+}
+
+#[test]
+fn boundary43_resolved_rectangles_yaw_nonuniform_and_shear_enclose_vertices() {
+    let points = vec![
+        Vec2::new(-100.0, -20.0),
+        Vec2::new(100.0, -20.0),
+        Vec2::new(100.0, 20.0),
+        Vec2::new(-100.0, 20.0),
+    ];
+    let shape = WaterShape::Polygon {
+        points: points.clone(),
+    };
+    let transforms = [
+        GlobalTransform::from(Transform::from_xyz(450.0, 0.0, 450.0)),
+        GlobalTransform::from(
+            Transform::from_xyz(450.0, 0.0, 450.0)
+                .with_rotation(Quat::from_rotation_y(0.71))
+                .with_scale(Vec3::new(-2.0, 1.0, 0.4)),
+        ),
+        GlobalTransform::from(bevy::math::Affine3A::from_mat3_translation(
+            Mat3::from_cols(Vec3::new(2.0, 0.0, 0.5), Vec3::Y, Vec3::new(0.7, 0.0, 0.4)),
+            Vec3::new(450.0, 0.0, 450.0),
+        )),
+    ];
+    for transform in transforms {
+        let body =
+            ResolvedWaterBody::resolve(Entity::from_bits(1), &shape, None, &transform).unwrap();
+        let (minimum, maximum) = body.aabb();
+        let (center, half) = body.extent();
+        let params = BodyParams::bounded(center, half, minimum, maximum - minimum, false, None);
+        assert_eq!(params.extent, Vec4::new(center.x, center.y, 0.0, half));
+        for point in &points {
+            let world = body.world_point(*point);
+            assert!(world.cmpge(minimum).all() && world.cmple(maximum).all());
+            assert!((world - center).abs().cmple(Vec2::splat(half)).all());
+            for eye in [Vec2::ZERO, Vec2::new(-120.0, 650.0), center] {
+                assert!(boundary43_distance(eye, params) <= eye.distance(world) + 0.001);
+            }
+        }
+    }
+}
+
+#[test]
+fn absent_ocean_vertices_return_flat_after_rivers() {
+    let shader = include_str!("cascade/deform.wgsl");
+    let river = shader.find("    if result.river {").unwrap();
+    let flat = shader
+        .find("    if bounded || field_params.info.y < 0.5 {")
+        .expect("absent-Ocean vertices must not reach ocean deformation");
+    let ocean = shader.find("    let transitioned = select(").unwrap();
+    assert!(river < flat && flat < ocean);
+    assert!(shader[river..flat].contains("return result;"));
+    assert!(shader[flat..ocean].contains("result.wave_height = 0.0;"));
+    assert!(shader[flat..ocean].contains("return result;"));
+    // Disabling ocean displacement must not invent bounded ownership.
+    assert!(shader.contains("let bounded = slot > 0u;"));
+    assert!(shader.contains("result.bounded = bounded;"));
 }

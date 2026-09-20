@@ -12,8 +12,7 @@
 }
 #import bevy_aqua_core::deform::{deform_current}
 #import bevy_render::globals::Globals
-#import bevy_aqua_core::waves_sample::{CascadeLayout, lod_alpha, world_to_uv}
-#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_FAR_TIER, MIN_SAMPLE_WEIGHT, begin_invocation, cascade_layout, far_tier_weight, field_params, lod_count, owning_body, sample_field_flow, sample_field_level, surface}
+#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_FAR_TIER, MIN_SAMPLE_WEIGHT, begin_invocation, CascadeLayout, cascade_layout, far_tier_weight, field_params, lod_alpha, lod_count, owning_body, sample_field_flow, sample_field_level, surface, world_to_uv}
 #import bevy_aqua_core::river::river_analytic_displacement
 
 // Retained AnimWaves output and the exact layout/time/flow that produced it.
@@ -73,7 +72,6 @@ fn previous_far_displacement(world_xz: vec2<f32>) -> vec3<f32> {
     let weight = 1.0 - lod_alpha(
         world_xz,
         cascade_layout.cascades[outer_lod],
-        cascade_layout,
     );
     if weight <= MIN_SAMPLE_WEIGHT {
         return vec3(0.0);
@@ -127,7 +125,7 @@ fn vertex(vertex_in: Vertex) -> VertexOutput {
                 deformation.sample_xz.y,
                 1.0,
             );
-        } else if !deformation.bounded {
+        } else if !deformation.bounded && field_params.info.y >= 0.5 {
             let mode = u32(round(surface.debug.x));
             let far_diagnostic = mode == DEBUG_MODE_FAR_TIER;
             let far_tier = select(
@@ -159,7 +157,7 @@ fn vertex(vertex_in: Vertex) -> VertexOutput {
                 1.0,
             );
         }
-        // Bounded flat water intentionally retains current == previous.
+        // Flat water, including unowned support without an Ocean, stays still.
     }
     out.previous_world_position = previous_world_position;
 #endif
@@ -191,9 +189,10 @@ fn fragment(in: VertexOutput) -> FragmentOutput {
     let params = owning_body(slot);
     begin_invocation(bounded, params);
     if bounded {
-        let distance_to_extent = length(
-            params.extent.xy - view.world_position.xz,
-        ) - params.extent.w;
+        let distance_to_extent = length(max(
+            abs(view.world_position.xz - params.extent.xy) - vec2(params.extent.w),
+            vec2(0.0),
+        ));
         if distance_to_extent > surface.far_tier.y {
             discard;
         }

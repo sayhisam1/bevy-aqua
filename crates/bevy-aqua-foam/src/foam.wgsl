@@ -1,14 +1,28 @@
 // Persistent reprojection, decay, whitecaps, and shore source.
 #import aqua::foam::contract::{FOAM_LOD_COUNT, FOAM_TEXTURE_RESOLUTION, FOAM_TEXTURE_RESOLUTION_U32}
-#import bevy_aqua_core::waves_sample::{
-    CascadeLayout,
-    CascadeParams,
-    UV_CENTER,
-    world_to_uv,
-}
 
 // Decoded "no bed data" depth: matches a cleared full-depth capture texel.
 const NO_BED_DEPTH: f32 = 256.0;
+const UV_CENTER: f32 = 0.5;
+
+struct CascadeParams {
+    center: vec2<f32>,
+    scale: f32,
+    texture_res: f32,
+    inv_texture_res: f32,
+    texel_width: f32,
+    weight: f32,
+    max_wavelength: f32,
+}
+
+struct CascadeLayout {
+    cascades: array<CascadeParams, 6>,
+    center: vec4<f32>,
+    // XY bed-map first-texel world origin, ZW inverse world extent.
+    bed_transform: vec4<f32>,
+    // X height minimum, Y height span (negative = no bed map), Z sea level.
+    bed_range: vec4<f32>,
+}
 
 struct FoamUniform {
     source_layout: CascadeLayout,
@@ -16,6 +30,8 @@ struct FoamUniform {
     step: vec4<u32>,
     wave: vec4<f32>,
     shore: vec4<f32>,
+    // XY global current (m/s), Z current wave-producer time (seconds).
+    advection: vec4<f32>,
 }
 
 @group(0) @binding(0) var source_foam: texture_2d_array<f32>;
@@ -25,6 +41,12 @@ struct FoamUniform {
 @group(0) @binding(4) var bed_height: texture_2d<f32>;
 @group(0) @binding(5) var target_foam: texture_storage_2d_array<rgba16float, write>;
 @group(0) @binding(6) var<uniform> foam: FoamUniform;
+@group(0) @binding(7) var fft_surface: texture_2d_array<f32>;
+
+fn world_to_uv(world_xz: vec2<f32>, cascade: CascadeParams) -> vec2<f32> {
+    let coverage = cascade.texel_width * cascade.texture_res;
+    return (world_xz - cascade.center) / coverage + vec2(UV_CENTER);
+}
 
 fn texel_world(id: vec2<u32>, cascade: CascadeParams) -> vec2<f32> {
     let uv = (vec2<f32>(id) + vec2(0.5)) / FOAM_TEXTURE_RESOLUTION;
@@ -60,12 +82,18 @@ fn reproject(world_xz: vec2<f32>, slice: u32, source: CascadeLayout) -> f32 {
     return 0.0;
 }
 
+// Wave textures are generated in unadvected phase coordinates. Foam state,
+// target/source cascade layouts, and the bed remain world anchored.
+fn wave_sample_xz(world_xz: vec2<f32>) -> vec2<f32> {
+    return world_xz - foam.advection.xy * foam.advection.z;
+}
+
 fn displacement(world_xz: vec2<f32>, slice: u32) -> vec4<f32> {
     let cascade = foam.target_layout.cascades[slice];
     return textureSampleLevel(
         anim_waves,
         waves_sampler,
-        world_to_uv(world_xz, cascade),
+        world_to_uv(wave_sample_xz(world_xz), cascade),
         i32(slice),
         0.0,
     );
@@ -78,10 +106,10 @@ fn jacobian_foam_source(
 ) -> f32 {
     if foam.step.z != 0u {
         let determinant = textureSampleLevel(
-            anim_waves,
+            fft_surface,
             waves_sampler,
-            world_to_uv(world_xz, cascade),
-            i32(slice + FOAM_LOD_COUNT),
+            world_to_uv(wave_sample_xz(world_xz), cascade),
+            i32(slice),
             0.0,
         ).w;
         return clamp(foam.wave.w - determinant, 0.0, 1.0);
@@ -132,7 +160,7 @@ fn averaged_foam_source(
     );
 }
 
-// Water depth below sea level. Unmapped samples use the cleared full-depth value.
+// Signed sea-level minus bed height. Unmapped samples use full depth.
 fn bed_water_depth(world_xz: vec2<f32>) -> f32 {
     let range = foam.target_layout.bed_range;
     if range.y < 0.0 {
@@ -164,7 +192,7 @@ fn bed_water_depth(world_xz: vec2<f32>) -> f32 {
         fraction.x,
     );
     let height = mix(row_0, row_1, fraction.y) * range.y + range.x;
-    return max(range.z - height, 0.0);
+    return range.z - height;
 }
 
 fn update(id: vec3<u32>, use_previous_layout: bool, dt: f32) {
@@ -174,9 +202,12 @@ fn update(id: vec3<u32>, use_previous_layout: bool, dt: f32) {
     let slice = id.z;
     let cascade = foam.target_layout.cascades[slice];
     let world_xz = texel_world(id.xy, cascade);
-    var density = reproject(world_xz, slice, foam.target_layout);
+    // Semi-Lagrangian history: one current displacement per fixed sim tick.
+    // Layout-only reprojection has dt=0, so it cannot advect a second time.
+    let history_xz = world_xz - foam.advection.xy * dt;
+    var density = reproject(history_xz, slice, foam.target_layout);
     if use_previous_layout {
-        density = reproject(world_xz, slice, foam.source_layout);
+        density = reproject(history_xz, slice, foam.source_layout);
     }
 
     density *= max(0.0, 1.0 - foam.wave.y * dt);
@@ -185,16 +216,19 @@ fn update(id: vec3<u32>, use_previous_layout: bool, dt: f32) {
     density += 5.0 * dt * foam.wave.z
         * averaged_foam_source(world_xz, slice, cascade);
 
-    var depth = bed_water_depth(world_xz + center.xz) + center.y;
+    let depth = bed_water_depth(world_xz + center.xz) + center.y;
+    // Signed instantaneous depth rejects dry land and permits wave run-up.
+    let wet = smoothstep(0.0, 0.1 * foam.shore.z, depth);
     // Two world-anchored finite bands: a wet edge and a breaking-wave band.
     // Persistent reprojection and decay filter both under camera motion.
     let wet_edge = 1.0 - smoothstep(foam.shore.z, 2.0 * foam.shore.z, depth);
     let breaker_rise = smoothstep(foam.shore.z, foam.shore.w, depth);
     let breaker_fall = 1.0 - smoothstep(foam.shore.w, foam.shore.x, depth);
-    let shore_source = max(wet_edge, 0.18 * breaker_rise * breaker_fall);
+    let shore_source = wet * max(wet_edge, 0.18 * breaker_rise * breaker_fall);
     density += foam.shore.y * dt * shore_source;
 
-    density = clamp(density, 0.0, 1.0);
+    // Also remove old foam and whitecap injection on newly exposed bed.
+    density = select(0.0, clamp(density, 0.0, 1.0), depth > 0.0);
     textureStore(target_foam, vec2<i32>(id.xy), i32(slice), vec4(density, 0.0, 0.0, 0.0));
 }
 

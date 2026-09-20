@@ -68,6 +68,7 @@ fn pass_table() -> Vec<pass::PassSpec> {
                         StorageTextureAccess::WriteOnly,
                     ),
                     uniform_buffer::<Uniform>(false),
+                    texture_2d_array(TextureSampleType::Float { filterable: true }),
                 ),
             ),
         ),
@@ -110,10 +111,11 @@ fn prepare_bind_groups(
     let Some(depth) = bed::gpu_image(bed.as_deref(), &fallback, &images) else {
         return;
     };
-    let (Some(state_a), Some(state_b), Some(waves)) = (
+    let (Some(state_a), Some(state_b), Some(waves), Some(wave_surface)) = (
         images.get(&frame.state_a),
         images.get(&frame.state_b),
         images.get(&frame.waves),
+        images.get(&frame.wave_surface),
     ) else {
         return;
     };
@@ -152,6 +154,7 @@ fn prepare_bind_groups(
                         &depth.texture_view,
                         &$write.texture_view,
                         uniform,
+                        &wave_surface.texture_view,
                     )),
                 ),
             );
@@ -183,16 +186,9 @@ fn write_foam(
     ) else {
         return;
     };
-    // Compute the outcome before borrowing bind groups from `prepared`.
     let pending_steps = frame.uniform.step.x.saturating_sub(prepared.completed_tick);
     let dispatch_count = pending_steps.clamp(1, MAX_CATCH_UP_STEPS);
     let state_is_a = prepared.state_is_a;
-    let new_state_is_a = state_is_a != (dispatch_count % 2 == 1);
-    prepared.state_is_a = new_state_is_a;
-    prepared.completed_tick = prepared
-        .completed_tick
-        .saturating_add(pending_steps.min(MAX_CATCH_UP_STEPS));
-    prepared.state_layout = Some(frame.uniform.target_layout.clone());
 
     let (Some(group_a_to_b), Some(group_b_to_a)) =
         (prepared.groups.get("a_to_b"), prepared.groups.get("b_to_a"))
@@ -250,4 +246,12 @@ fn write_foam(
         },
     });
     pass::run_spans(&mut context, &[pass::Span::new("aqua_foam_compute", steps)]);
+
+    // Commit only after all dispatches and the published-surface copy are
+    // encoded. Unavailable inputs or pipelines must preserve history for retry.
+    prepared.state_is_a = state_is_a;
+    prepared.completed_tick = prepared
+        .completed_tick
+        .saturating_add(pending_steps.min(MAX_CATCH_UP_STEPS));
+    prepared.state_layout = Some(frame.uniform.target_layout.clone());
 }
