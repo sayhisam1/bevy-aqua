@@ -98,17 +98,6 @@ fn deep_water_weight(water_depth: f32) -> f32 {
     return smoothstep(0.35, surface.shallow_color.a, water_depth);
 }
 
-fn depth_aware_body_albedo(
-    water_depth: f32,
-    deep_body_albedo: vec3<f32>,
-) -> vec3<f32> {
-    return mix(
-        surface.shallow_color.rgb,
-        deep_body_albedo,
-        deep_water_weight(water_depth),
-    );
-}
-
 fn surface_medium_radiance(scene: vec3<f32>, to_view: vec3<f32>, t_end: f32) -> vec3<f32> {
     return water_leaving_radiance(
         scene,
@@ -374,19 +363,9 @@ fn sample_water_medium(
     in: SurfaceVertexOutput,
     surface_lod: u32,
     lighting_normal: vec3<f32>,
-    to_view: vec3<f32>,
     mode: u32,
 ) -> MediumState {
     let water_depth = blended_water_depth(in.undisplaced_xz);
-    let view_vertical = abs(to_view.y);
-    let deep_body_albedo = mix(
-        surface.grazing_color.rgb,
-        surface.deep_color.rgb,
-        view_vertical,
-    );
-    // Metric SeaFloorDepth shifts only the volume-scatter endpoint. Reflection,
-    // foam, and camera-depth transmission remain on their existing lanes.
-    let body_albedo = depth_aware_body_albedo(water_depth, deep_body_albedo);
     var diffuse_irradiance = vec3(0.0);
     if mode >= DEBUG_MODE_BEAUTY {
         diffuse_irradiance = sample_diffuse_environment(lighting_normal);
@@ -400,7 +379,6 @@ fn sample_water_medium(
         );
     }
     return MediumState(
-        body_albedo,
         diffuse_irradiance,
         water_depth,
         foam_density,
@@ -517,19 +495,12 @@ fn illuminate_bed(
     );
 }
 
-// Beauty-only attenuation. Diagnostics intentionally retain authored extinction.
-fn beauty_extinction(water_depth: f32) -> vec3<f32> {
-    let scale = mix(vec3(0.52, 0.42, 0.62), vec3(1.0), deep_water_weight(water_depth));
-    return invocation_extinction() * scale;
-}
-
 // Beauty skips color sampling when there is no usable background or the accepted
 // water path is opaque. Diagnostics deliberately bypass these shortcuts.
 fn beauty_transmission(
     in: SurfaceVertexOutput,
     normal: vec3<f32>,
     to_view: vec3<f32>,
-    medium: MediumState,
     primary: PrimaryLightState,
     depth_path: CameraDepthPath,
     source_slot: u32,
@@ -545,8 +516,7 @@ fn beauty_transmission(
         depth_debug.refracted_path_length,
         use_refraction,
     );
-    // Reduce extinction in the first few metres so the seabed stays visible.
-    let extinction = beauty_extinction(medium.water_depth);
+    let extinction = invocation_extinction();
     let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));
     // Refraction can reveal a shallower bed: test the accepted path, not the original.
     if !(minimum_extinction * water_path < TRANSMISSION_OPAQUE_OPTICAL_DEPTH) {
@@ -583,8 +553,7 @@ fn far_path_opaque(
         accepted.refracted_path_length,
         accepted.refracted_sample_valid,
     );
-    let depth = blended_water_depth(in.undisplaced_xz);
-    let extinction = beauty_extinction(depth);
+    let extinction = invocation_extinction();
     let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));
     return minimum_extinction * water_path >= TRANSMISSION_OPAQUE_OPTICAL_DEPTH;
 }
@@ -593,7 +562,6 @@ fn resolve_transmission(
     in: SurfaceVertexOutput,
     normal: vec3<f32>,
     to_view: vec3<f32>,
-    medium: MediumState,
     foam: FoamState,
     primary: PrimaryLightState,
     mode: u32,
@@ -612,7 +580,7 @@ fn resolve_transmission(
     }
     if mode == DEBUG_MODE_BEAUTY {
         let body = beauty_transmission(
-            in, normal, to_view, medium, primary, shared_depth_path, source_slot,
+            in, normal, to_view, primary, shared_depth_path, source_slot,
         );
         return TransmissionState(body, vec4(0.0), false);
     }

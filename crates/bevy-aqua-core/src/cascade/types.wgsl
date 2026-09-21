@@ -52,7 +52,6 @@ struct PrimaryLightState {
 }
 
 struct MediumState {
-    deep_body_albedo: vec3<f32>,
     diffuse_irradiance: vec3<f32>,
     water_depth: f32,
     foam_density: f32,

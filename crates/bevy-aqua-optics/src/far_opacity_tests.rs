@@ -27,12 +27,8 @@ fn threshold() -> f32 {
         .parse()
         .unwrap()
 }
-fn minimum(extinction: [f32; 3], deep_weight: f32) -> f32 {
-    extinction
-        .into_iter()
-        .zip([0.52, 0.42, 0.62])
-        .map(|(e, s)| e * (s + (1.0 - s) * deep_weight))
-        .fold(f32::INFINITY, f32::min)
+fn minimum(extinction: [f32; 3]) -> f32 {
+    extinction.into_iter().fold(f32::INFINITY, f32::min)
 }
 fn opaque(has_background: bool, raw: f32, refracted: f32, valid: bool, extinction: f32) -> bool {
     // Source guards below bind this reference's decisions to the actual shader.
@@ -43,7 +39,7 @@ fn opaque(has_background: bool, raw: f32, refracted: f32, valid: bool, extinctio
 #[test]
 fn clear_water_thresholds_and_least_attenuated_channel() {
     assert!((threshold() - 10.0_f32 * 2.0_f32.ln()).abs() < 1e-6);
-    let ext = minimum([0.5, 0.1, 0.3], 1.0);
+    let ext = minimum([0.5, 0.1, 0.3]);
     for (path, expected) in [(7.0, false), (24.0, false), (69.0, false), (70.0, true)] {
         assert_eq!(
             opaque(true, path, path, false, ext),
@@ -57,42 +53,22 @@ fn clear_water_thresholds_and_least_attenuated_channel() {
     assert!((-ext * 70.0).exp() <= 1.0 / 1024.0);
 }
 #[test]
-fn shallow_beauty_scale_changes_opacity_and_channel_selection() {
-    let ext = minimum([0.1; 3], 0.0);
-    assert!((ext - 0.042).abs() < 1e-7);
-    assert!(!opaque(true, 70.0, 0.0, false, ext));
-    assert!(!opaque(true, 165.0, 0.0, false, ext));
-    assert!(opaque(true, 166.0, 0.0, false, ext));
-    assert!((minimum([0.1; 3], 0.5) - 0.071).abs() < 1e-7);
-    // R is the authored minimum, but G becomes the scaled minimum.
-    assert!((minimum([0.1, 0.11, 0.2], 0.0) - 0.0462).abs() < 1e-7);
+fn opacity_gate_uses_authored_extinction() {
     let gate = function(OPTICS, "far_path_opaque");
     let transmission = function(OPTICS, "beauty_transmission");
-    if OPTICS.contains("fn beauty_extinction(") {
-        let helper = function(OPTICS, "beauty_extinction");
-        assert!(
-            helper
-                .contains("mix(vec3(0.52, 0.42, 0.62), vec3(1.0), deep_water_weight(water_depth))")
-        );
-        assert!(helper.contains("invocation_extinction() * scale"));
-        assert!(gate.contains("beauty_extinction(depth)"));
-        assert!(transmission.contains("beauty_extinction(medium.water_depth)"));
-    } else {
-        assert!(gate.contains("mix(vec3(0.52, 0.42, 0.62), vec3(1.0), deep_water_weight(depth))"));
-        assert!(gate.contains("invocation_extinction() * scale"));
-        assert!(
-            transmission.contains("smoothstep(0.35, surface.shallow_color.a, medium.water_depth)")
-        );
-        assert!(transmission.contains("mix(vec3(0.52, 0.42, 0.62), vec3(1.0), deep_weight)"));
-        assert!(transmission.contains("invocation_extinction() * shallow_extinction_scale"));
+    assert!(!OPTICS.contains("fn beauty_extinction("));
+    assert!(!OPTICS.contains("0.52, 0.42, 0.62"));
+    assert!(!OPTICS.contains("fn depth_aware_body_albedo("));
+    for source in [gate, transmission] {
+        assert!(source.contains("let extinction = invocation_extinction();"));
+        assert!(source.contains("min(extinction.r, min(extinction.g, extinction.b))"));
+        assert!(!source.contains("deep_water_weight"));
     }
     assert!(
         function(OPTICS, "deep_water_weight")
             .contains("smoothstep(0.35, surface.shallow_color.a, water_depth)")
     );
-    for source in [gate, transmission] {
-        assert!(source.contains("min(extinction.r, min(extinction.g, extinction.b))"));
-    }
+    assert!(MATERIAL.contains("far_tier *= deep_water_weight(far_water_depth);"));
 }
 #[test]
 fn accepted_refraction_not_raw_depth_controls_gate() {
@@ -194,7 +170,7 @@ fn raw_depth_cache_survives_foam_and_rejection_reconstructs_near_normal() {
             "shared_depth_path = camera_depth_path(in);",
             "if mode == DEBUG_MODE_BEAUTY {",
             "beauty_transmission(",
-            "in, normal, to_view, medium, primary, shared_depth_path, source_slot,",
+            "in, normal, to_view, primary, shared_depth_path, source_slot,",
         ],
     );
     // Only raw depth is shared. Accepted refracted depth must be recomputed with the restored normal.

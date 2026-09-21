@@ -638,7 +638,7 @@ fn fragment(
     }
 
     let primary = resolve_primary_light(in, near.normal);
-    let medium = sample_water_medium(in, surface_lod, near.lighting_normal, to_view, mode);
+    let medium = sample_water_medium(in, surface_lod, near.lighting_normal, mode);
     if mode == DEBUG_MODE_SEA_FLOOR {
         let depth = clamp(medium.water_depth / surface.sea_floor.y, 0.0, 1.0);
         return vec4(1.0 - depth, 0.0, depth, 1.0);
@@ -675,7 +675,7 @@ fn fragment(
         mode,
     );
     let transmission =
-        resolve_transmission(in, near.normal, to_view, medium, foam, primary, mode, slot);
+        resolve_transmission(in, near.normal, to_view, foam, primary, mode, slot);
     if transmission.handled {
         return transmission.output;
     }
