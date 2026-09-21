@@ -7,7 +7,9 @@ without the feature retain the original culling and above-water shader path.
 `WaterOptics::scatter_tint` and `scattering_asymmetry` control the homogeneous
 single-scattering medium. Existing presets keep their accepted extinction,
 scatter scale, and surface colours; the new tint defaults to white. The phase
-asymmetry is clamped by the shader to `[-0.99, 0.99]`.
+asymmetry is clamped by the shader to `[-0.99, 0.99]`. Above-water transmission
+and far water evaluate the same integral, converted to air as water-leaving
+radiance.
 
 The underside uses exact unpolarized water-to-air Fresnel and total internal
 reflection. Its air-window distortion is projected through the active camera

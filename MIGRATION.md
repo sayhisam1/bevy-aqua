@@ -61,8 +61,8 @@ builds.
 Code that mirrors these cross-crate types must update both Rust and WGSL:
 
 - `SurfaceParams::fog_density.w` now carries the authored ocean
-  `WaterOptics::scatter_scale` for underwater paths. Front-face ocean shading
-  deliberately retains its historical scale of `1.0`.
+  `WaterOptics::scatter_scale` for the shared medium integral on both
+  the front-face volume path and underwater shading.
 - `SurfaceParams::medium_scatter: Vec4` is inserted after `sss_tint`; RGB stores
   `scatter_tint` and W stores `scattering_asymmetry`. Its encoded size changes
   from 304 to 320 bytes.

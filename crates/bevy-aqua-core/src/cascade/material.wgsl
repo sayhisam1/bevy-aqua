@@ -18,7 +18,7 @@
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
 
-#import aqua::cascade::{CREST_SSS_RANGE, CREST_SSS_UNCOMPRESSED, DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_FAR_TIER, DEBUG_MODE_FOAM, DEBUG_MODE_LIGHT_RADIANCE, DEBUG_MODE_REFLECTION, DEBUG_MODE_REFLECTION_FRACTION, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, DEBUG_MODE_WAVE_HEIGHT, LUMINANCE_EPSILON, LocalLightSample, MIN_NORMAL_Y, SAFE_LENGTH_SQUARED, advected_world, begin_invocation, capillary_resolved_weight, cascade_layout, effective_flow, far_tier_weight, field_params, godot_fresnel, invocation_extinction, invocation_ripple, invocation_scatter_tint, invocation_scattering_asymmetry, invocation_river_state, invocation_scatter_scale, lod_count, owning_body, sample_displacement, sample_field_flow, sample_field_level, sample_planar_reflection, set_body_optics, set_effective_flow, set_effective_time, set_fragment_river, set_river_ripple, set_xz_footprint, set_filtered_spectral_surface, snap_and_transition, invocation_sun_roughness, surface}
+#import aqua::cascade::{CREST_SSS_RANGE, CREST_SSS_UNCOMPRESSED, DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_FAR_TIER, DEBUG_MODE_FOAM, DEBUG_MODE_LIGHT_RADIANCE, DEBUG_MODE_REFLECTION, DEBUG_MODE_REFLECTION_FRACTION, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, DEBUG_MODE_WAVE_HEIGHT, LUMINANCE_EPSILON, LocalLightSample, MIN_NORMAL_Y, SAFE_LENGTH_SQUARED, advected_world, begin_invocation, capillary_resolved_weight, cascade_layout, effective_flow, far_tier_weight, field_params, godot_fresnel, invocation_extinction, invocation_ripple, invocation_scatter_tint, invocation_scattering_asymmetry, invocation_river_state, lod_count, owning_body, sample_displacement, sample_field_flow, sample_field_level, sample_planar_reflection, set_body_optics, set_effective_flow, set_effective_time, set_fragment_river, set_river_ripple, set_xz_footprint, set_filtered_spectral_surface, snap_and_transition, invocation_sun_roughness, surface}
 
 #import aqua::waves::displace::{WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, crest_sss, detail_normal_sample, far_displacement, far_normal_cross, filtered_fft_normal, sample_fft_normal_cross}
 
@@ -115,13 +115,10 @@ fn directional_scatter(
     surface_lod: u32,
     near: NearSurface,
     primary: PrimaryLightState,
-    medium: MediumState,
     to_view: vec3<f32>,
     mode: u32,
 ) -> vec3<f32> {
-    // Crest's authored deep/grazing colours are volume-scatter albedos. They
-    // carry no radiance until the scene environment illuminates them.
-    var scatter_colour = medium.deep_body_albedo * medium.diffuse_irradiance;
+    var scatter_colour = vec3(0.0);
     // Crest `OceanEmission.hlsl::ScatterColour`: backlit subsurface tint is
     // driven by horizontal-displacement pinch, not absolute wave height.
     if mode >= DEBUG_MODE_BEAUTY
@@ -674,16 +671,11 @@ fn fragment(
         surface_lod,
         near,
         primary,
-        medium,
         to_view,
         mode,
     );
-    // Deep-pool darkness: bodies scale the ocean scatter endpoint down so
-    // colour comes from the bed through low-extinction water, not from a
-    // turquoise volume endpoint.
-    let scaled_scatter = scatter * invocation_scatter_scale();
     let transmission =
-        resolve_transmission(in, near.normal, scaled_scatter, medium, foam, primary, mode, slot);
+        resolve_transmission(in, near.normal, to_view, medium, foam, primary, mode, slot);
     if transmission.handled {
         return transmission.output;
     }
@@ -694,7 +686,7 @@ fn fragment(
         medium,
         foam,
         to_view,
-        transmission.body,
+        transmission.body + scatter,
         mode,
     );
     let reflected = shade_environment_and_sun(

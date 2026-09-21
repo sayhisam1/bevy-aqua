@@ -145,7 +145,7 @@ fn no_background_and_zero_path_preserve_existing_contract() {
         beauty,
         &[
             "if !(depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON) {",
-            "return scatter_colour;",
+            "return surface_medium_radiance(vec3(0.0), to_view, PATH_LENGTH_MAX);",
             "camera_depth_debug_from_path(",
             "opaque_background(",
         ],
@@ -194,7 +194,7 @@ fn raw_depth_cache_survives_foam_and_rejection_reconstructs_near_normal() {
             "shared_depth_path = camera_depth_path(in);",
             "if mode == DEBUG_MODE_BEAUTY {",
             "beauty_transmission(",
-            "in, normal, scatter_colour, medium, primary, shared_depth_path, source_slot,",
+            "in, normal, to_view, medium, primary, shared_depth_path, source_slot,",
         ],
     );
     // Only raw depth is shared. Accepted refracted depth must be recomputed with the restored normal.
