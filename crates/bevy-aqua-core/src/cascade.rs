@@ -345,7 +345,8 @@ pub struct SurfaceParams {
     /// The shader advects wave sampling by `flow * globals.time` and aligns
     /// decorative surface motion with the authored wave direction.
     pub advection: Vec4,
-    /// x: far-tier transition start in metres, y: end; zw reserved.
+    /// x: far-tier transition start in metres, y: end.
+    /// z: 1 when screen-space reflections are enabled. w reserved.
     pub far_tier: Vec4,
     /// Strength, metres per cell, metres per second, and maximum depth in metres.
     pub caustics: Vec4,
@@ -608,7 +609,12 @@ pub fn update(
         material.surface.advection = Vec4::new(waves.flow.x, waves.flow.y, heading.x, heading.y);
         let far_start = settings.far_tier_start.max(0.0);
         let far_end = settings.far_tier_end.max(far_start + 1.0);
-        material.surface.far_tier = Vec4::new(far_start, far_end, 0.0, 0.0);
+        let screen_space_reflections = if settings.screen_space_reflections {
+            1.0
+        } else {
+            0.0
+        };
+        material.surface.far_tier = Vec4::new(far_start, far_end, screen_space_reflections, 0.0);
         material.surface.sea_floor.w = caustic_sun.0.clamp(0.0, 1.0);
         material.surface.caustics = settings.caustics.map_or(Vec4::ZERO, |caustics| {
             Vec4::new(

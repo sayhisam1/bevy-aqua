@@ -285,3 +285,13 @@ fn absent_ocean_vertices_return_flat_after_rivers() {
     assert!(shader.contains("let bounded = slot > 0u;"));
     assert!(shader.contains("result.bounded = bounded;"));
 }
+
+#[test]
+fn screen_space_reflections_default_off_and_pack_into_far_tier_z() {
+    assert!(!AquaSettings::default().screen_space_reflections);
+    let update = include_str!("cascade.rs");
+    assert!(update.contains("settings.screen_space_reflections"));
+    assert!(update.contains("Vec4::new(far_start, far_end, screen_space_reflections, 0.0)"));
+    let common = include_str!("cascade/common.wgsl");
+    assert!(common.contains("z: 1 when screen-space reflections are enabled."));
+}

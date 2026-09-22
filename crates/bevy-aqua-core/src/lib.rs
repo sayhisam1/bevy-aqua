@@ -389,6 +389,11 @@ pub struct AquaSettings {
     /// Full far-shading distance, clamped to at least one metre past the start.
     pub far_tier_end: f32,
     pub reflections: ReflectionMode,
+    /// March the reflected ray through the opaque depth buffer. Off by default.
+    /// A hit replaces the cubemap or planar sample on the topside. With the
+    /// `underwater` feature, the underside reflected ray uses the same march
+    /// and falls back to the medium on a miss. The camera needs a depth prepass.
+    pub screen_space_reflections: bool,
     /// Procedural bed caustics; `None` disables both texture samples.
     pub caustics: Option<Caustics>,
 }
@@ -402,6 +407,7 @@ impl Default for AquaSettings {
             far_tier_start: 320.0,
             far_tier_end: 512.0,
             reflections: ReflectionMode::default(),
+            screen_space_reflections: false,
             caustics: Some(Caustics::default()),
         }
     }

@@ -47,8 +47,9 @@ ABI must populate it.
 
 4. **The first integration has deliberate bounds.** It uses a homogeneous
    horizontal mean-plane volume and one active Aqua view. It does not implement
-   a displaced per-pixel waterline, screen-space reflections, bounded-body side
-   clipping, or multi-camera Aqua rendering. Orthographic cameras safely skip
+   a displaced per-pixel waterline, bounded-body side clipping, or multi-camera
+   Aqua rendering. `AquaSettings::screen_space_reflections` is a separate
+   surface march, off by default. Orthographic cameras safely skip
    the volume composite. Multisampled depth is conservatively resolved, but its
    native MSAA-off/default capture checks pass; other configurations and browser
    runtime behavior remain unverified. See

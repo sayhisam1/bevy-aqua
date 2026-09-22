@@ -117,7 +117,10 @@ bound the reduced-cost shading transition in metres. Far shading keeps sun
 and reflections while omitting depth, foam, and sampled subsurface detail.
 `reflections` selects the default planar mirror views or the cubemap-only path. Both use the same dielectric Fresnel response. Mark terrain or a
 scene root with `ReflectedInWater` to include it and its descendants in planar
-views.
+views. `screen_space_reflections` is off by default. When enabled, a hit along
+the reflected ray replaces that cubemap or planar sample. The camera needs a
+depth prepass. With the `underwater` feature the same switch marches the
+underside reflected ray.
 
 **Bevy 0.19.1 limitation:** planar mirrors can light double-sided
 `StandardMaterial` geometry with the wrong normal polarity. The mirrored camera
@@ -169,8 +172,8 @@ optional approximation also attenuates emissive and local-light contributions.
 
 This first integration uses a homogeneous medium and a local camera wave sample
 with roughly one frame of GPU readback latency. It does not claim exact displaced
-per-pixel waterline closure, screen-space reflections, bounded-body side clipping,
-or multi-camera support. Near-plane crossings and fully folded wave geometry
+per-pixel waterline closure, bounded-body side clipping, or multi-camera support.
+Near-plane crossings and fully folded wave geometry
 remain limited. Orthographic cameras skip the volume
 composite. Read [the underwater integration bounds](docs/underwater.md) before
 shipping it. The presence of the example and browser build configuration is not

@@ -13,10 +13,15 @@ radiance.
 
 The underside uses exact unpolarized water-to-air Fresnel and total internal
 reflection. Its air-window distortion is projected through the active camera
-and clamped in the active viewport. SSR is intentionally not included. Reflected
+and clamped in the active viewport. Reflected
 water-side rays use the same bounded homogeneous medium as the volume, including
 the active body’s scatter tint and phase asymmetry. The open fallback is evaluated
-in the resolved facet frame. A continuous shading-normal visibility clamp keeps
+in the resolved facet frame. When `AquaSettings::screen_space_reflections` is
+enabled, that reflected ray also marches the depth buffer. A hit is attenuated
+along the bounce. A miss, a rough lobe, or a ray that leaves the screen keeps
+the medium. Hits on the air side of the facet are rejected.
+
+A continuous shading-normal visibility clamp keeps
 resolved shading microdetail incident-facing before Fresnel, reflection,
 refraction, and medium evaluation, so the bounce remains in the local water
 halfspace even when its world-space Y component points upward. This does not

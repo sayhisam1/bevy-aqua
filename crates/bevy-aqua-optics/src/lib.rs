@@ -45,7 +45,7 @@ mod far_scatter_tests {
             .split("fn far_field_water(")
             .nth(1)
             .unwrap()
-            .split("fn camera_view_position(")
+            .split("fn empty_camera_depth_path(")
             .next()
             .unwrap();
         assert!(source.contains("fn surface_medium_radiance("));
@@ -70,3 +70,6 @@ mod caustic_receiver_tests;
 
 #[cfg(test)]
 mod medium_tests;
+
+#[cfg(test)]
+mod ssr_tests;

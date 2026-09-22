@@ -115,6 +115,7 @@ struct SurfaceParams {
     foam: vec4<f32>,
     advection: vec4<f32>,
     /// x/y: configurable far-tier start/end distances in metres.
+    /// z: 1 when screen-space reflections are enabled.
     far_tier: vec4<f32>,
     /// Strength, metres per cell, metres per second, and maximum depth in metres.
     caustics: vec4<f32>,

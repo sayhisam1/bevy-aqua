@@ -17,11 +17,15 @@ All notable changes to this project are documented here. The format follows [Kee
   example. The example can run feature-off or with `--features underwater`.
 - A focused native/WebGPU `debug_views` example that automatically cycles
   through every `AquaDebug` diagnostic mode.
+- Opt-in `AquaSettings::screen_space_reflections`. A depth-buffer hit replaces
+  the topside cubemap or planar sample. With the `underwater` feature the same
+  switch marches the underside reflected ray. The setting defaults to off and 
+  needs a camera depth prepass.
 
 ### Known limitations
 
 - Underwater volume integration uses a homogeneous horizontal mean plane and
-  one active Aqua view. It has no displaced per-pixel waterline, SSR,
+  one active Aqua view. It has no displaced per-pixel waterline,
   bounded-body side clipping, or multi-camera contract. Orthographic cameras
   skip the volume composite. Native MSAA-off/default captures are checked;
   other configurations and browser runtime remain unverified. See [`docs/underwater.md`](docs/underwater.md).
