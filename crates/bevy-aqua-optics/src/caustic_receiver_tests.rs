@@ -1,6 +1,8 @@
 //! Prototype regression contracts, not approval of geometry, optics, or GPU cost.
 //! CPU references do not execute WGSL. The frozen-offset 0.05 m / 1% view-Z
 //! heuristic can reject smooth slopes and accept small inter-surface jumps.
+use crate::test_support::wgsl_function;
+
 const OPTICS: &str = include_str!("optics.wgsl");
 const SCREEN: &str = include_str!("screen.wgsl");
 
@@ -11,9 +13,7 @@ fn function(name: &str) -> &str {
     } else {
         OPTICS
     };
-    let start = source.find(&marker).unwrap();
-    let tail = &source[start..];
-    &tail[..tail.find("\n}\n").unwrap() + 3]
+    wgsl_function(source, name)
 }
 fn ordered(source: &str, parts: &[&str]) {
     let mut tail = source;

@@ -31,6 +31,9 @@ pub fn add_shader(app: &mut App) {
 }
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
 mod refraction_tests;
 
 #[cfg(test)]

@@ -291,6 +291,7 @@ fn decorative_surface_detail_is_coherent_and_decorrelated() {
     assert!(shader.contains(
         "flow_frame(advected_xz - heading_frame(DETAIL_TRAVEL_1) * globals.time * speed)"
     ));
+    assert!(!shader.contains("flow_frame(advected_xz) - direction_a"));
     assert!(shader.contains("DETAIL_B_ROTATION"));
     assert!(shader.contains("DETAIL_B_SCALE: f32 = 1.41421356"));
     assert!(shader.contains("CAPILLARY_RESOLVED_STRENGTH: f32 = 0.45"));
@@ -300,35 +301,6 @@ fn decorative_surface_detail_is_coherent_and_decorrelated() {
     assert!(!shader.contains("CAPILLARY_A_SCALE * base_stretch,\n    ).xy"));
     assert!(shader.contains("flow_frame(\n        advected_world(world_xz) - direction"));
     assert!(!shader.contains("NORMAL_DIRECTION_1: vec2<f32> = vec2(-0.85, -0.53)"));
-}
-
-#[test]
-fn river_frame_transforms_world_heading_before_detail_sampling() {
-    fn river_frame(point: Vec2, flow: Vec2) -> Vec2 {
-        let speed = flow.length();
-        let direction = flow / speed;
-        Vec2::new(
-            direction.dot(point) / (1.0 + 0.55 * speed.min(4.5)),
-            Vec2::new(-direction.y, direction.x).dot(point) * 1.35,
-        )
-    }
-
-    let point = Vec2::new(13.0, -7.0);
-    let flow = Vec2::new(-0.8, 1.6);
-    let heading = Vec2::new(0.91, 0.41).normalize();
-    let world_step = 0.37 * heading;
-    let actual = river_frame(point - world_step, flow) - river_frame(point, flow);
-    let direction = flow.normalize();
-    let expected = Vec2::new(
-        -direction.dot(world_step) / (1.0 + 0.55 * flow.length().min(4.5)),
-        -Vec2::new(-direction.y, direction.x).dot(world_step) * 1.35,
-    );
-    assert!((actual - expected).length() < 1e-6);
-
-    let shader = include_str!("displace.wgsl");
-    let motion = "flow_frame(advected_xz - heading_frame(DETAIL_TRAVEL_0) * globals.time * speed)";
-    assert!(shader.contains(motion));
-    assert!(!shader.contains("flow_frame(advected_xz) - direction_a"));
 }
 
 #[test]
@@ -434,16 +406,6 @@ fn moment_filter_transfers_only_removed_slope_energy() {
     assert!(!base.contains("array<vec3<f32>"));
     assert!(base.contains("derivative_x += resolved_dx"));
     assert!(base.contains("max(dx.w + dz.w - resolved_energy, 0.0)"));
-}
-
-#[test]
-fn sum_derivatives_before_forming_the_surface_normal() {
-    let dx = [Vec3::new(0.1, 0.2, -0.1), Vec3::new(-0.05, -0.1, 0.02)];
-    let dz = [Vec3::new(-0.1, 0.05, 0.1), Vec3::new(0.02, 0.1, -0.03)];
-    let sum_dx: Vec3 = dx.into_iter().sum();
-    let sum_dz: Vec3 = dz.into_iter().sum();
-    let n = (Vec3::Z + sum_dz).cross(Vec3::X + sum_dx);
-    assert!((n - Vec3::new(-0.119, 1.1171, -0.1655)).length() < 1e-5);
 }
 
 #[test]

@@ -2,18 +2,10 @@
 //! These do not execute WGSL. Runtime shader compilation and visual checks
 //! remain necessary.
 
+use crate::test_support::{compact_wgsl as compact, compact_wgsl_function};
 use bevy::math::{Mat4, Quat, Vec2, Vec3};
 
 const OPTICS: &str = include_str!("optics.wgsl");
-
-fn compact(source: &str) -> String {
-    source
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or_default())
-        .flat_map(str::chars)
-        .filter(|c| !c.is_whitespace())
-        .collect()
-}
 
 fn assert_shader_contains(fragment: &str) {
     let sources = compact(OPTICS) + &compact(include_str!("screen.wgsl"));
@@ -189,12 +181,6 @@ fn wgsl_projection_and_metric_reconstruction_match_cpu_contracts() {
 }
 
 // Function-local order checks keep sampling guards from matching another path.
-fn shader_function(name: &str) -> String {
-    let marker = format!("fn {name}(");
-    let (_, tail) = OPTICS.split_once(&marker).expect("WGSL function missing");
-    compact(tail.split("\nfn ").next().unwrap())
-}
-
 fn assert_in_order(source: &str, fragments: &[&str]) {
     let mut remaining = source;
     for fragment in fragments {
@@ -208,7 +194,7 @@ fn assert_in_order(source: &str, fragments: &[&str]) {
 
 #[test]
 fn wgsl_beauty_gates_and_attenuates_the_accepted_path() {
-    let beauty = shader_function("beauty_transmission");
+    let beauty = compact_wgsl_function(OPTICS, "beauty_transmission");
     // Keep negated positive comparisons: <= / >= would admit NaN paths.
     assert_in_order(
         &beauty,
@@ -234,7 +220,7 @@ fn wgsl_beauty_gates_and_attenuates_the_accepted_path() {
 
 #[test]
 fn wgsl_transmission_routes_modes_before_sampling_and_reuses_foam_depth() {
-    let resolve = shader_function("resolve_transmission");
+    let resolve = compact_wgsl_function(OPTICS, "resolve_transmission");
     assert_in_order(
         &resolve,
         &[
