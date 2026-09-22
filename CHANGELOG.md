@@ -28,6 +28,14 @@ All notable changes to this project are documented here. The format follows [Kee
   `SurfaceParams` uniforms. Above-water body colour now comes from the same
   medium integral as underwater shading, so these fields had no effect.
 
+### Fixed
+
+- Wave queries dispatch only the active batch and preserve integer probe IDs.
+  Stale readbacks cannot update removed probes or reopen an old water-entry epoch.
+- Wave queries retain prior samples while waves, pipelines, or GPU resources are
+  unavailable, and refresh bindings when GPU objects change. Valid probes beyond
+  the 256-query budget keep their previous sample.
+
 ### Known limitations
 
 - Underwater volume integration uses a homogeneous horizontal mean plane and

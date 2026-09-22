@@ -48,25 +48,33 @@ struct AnimWavesUniform {
 }
 
 // `flow`: xy current (m/s), z signed bank margin (m), w channel half-width
-// (m). Zero current selects cascade sampling.
+// (m). Positive channel width selects the river path, even at zero current.
 struct QueryRequest {
     world_xz: vec2<f32>,
-    slot: f32,
-    kind: f32,
+    slot: u32,
+    kind: u32,
     flow: vec4<f32>,
 }
 
 struct QueryResult {
-    displacement_slot: vec4<f32>,
-    normal_validity: vec4<f32>,
-    signals: vec4<f32>,
+    displacement: vec4<f32>,
+    normal_crest: vec4<f32>,
+    // x: slot, y: batch generation, z: validity, w: reserved.
+    metadata: vec4<u32>,
+}
+
+struct QueryBatch {
+    count: u32,
+    generation: u32,
+    reserved: vec2<u32>,
 }
 
 @group(0) @binding(0) var lod_data: texture_2d_array<f32>;
 @group(0) @binding(1) var lod_sampler: sampler;
 @group(0) @binding(2) var<uniform> params: AnimWavesUniform;
-@group(0) @binding(3) var<storage, read> requests: array<QueryRequest>;
-@group(0) @binding(4) var<storage, read_write> results: array<QueryResult>;
+@group(0) @binding(3) var<uniform> batch: QueryBatch;
+@group(0) @binding(4) var<storage, read> requests: array<QueryRequest>;
+@group(0) @binding(5) var<storage, read_write> results: array<QueryResult>;
 
 fn lod_count() -> u32 {
     return u32(params.cascade_layout.center.w);
@@ -130,8 +138,7 @@ fn river_surface(world_xz: vec2<f32>, request: QueryRequest) -> vec3<f32> {
 @compute @workgroup_size(64u)
 fn sample(@builtin(global_invocation_id) id: vec3<u32>) {
     let index = id.x;
-    let count = arrayLength(&requests);
-    if index >= count || index >= MAX_QUERIES {
+    if index >= batch.count || index >= MAX_QUERIES {
         return;
     }
     let request = requests[index];
@@ -157,18 +164,18 @@ fn sample(@builtin(global_invocation_id) id: vec3<u32>) {
         );
         normal_cross.y = max(normal_cross.y, MIN_NORMAL_Y);
         results[index] = QueryResult(
-            vec4(vec3(0.0, analytic.x, 0.0), request.slot),
-            vec4(normalize(normal_cross), 1.0),
-            vec4(0.0),
+            vec4(0.0, analytic.x, 0.0, 0.0),
+            vec4(normalize(normal_cross), 0.0),
+            vec4<u32>(request.slot, batch.generation, 1u, 0u),
         );
         return;
     }
 
-    if request.kind > 0.5 {
+    if request.kind != 0u {
         results[index] = QueryResult(
-            vec4(0.0, 0.0, 0.0, request.slot),
-            vec4(0.0, 1.0, 0.0, 1.0),
             vec4(0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4<u32>(request.slot, batch.generation, 1u, 0u),
         );
         return;
     }
@@ -214,8 +221,8 @@ fn sample(@builtin(global_invocation_id) id: vec3<u32>) {
     let crest = clamp(0.55 - determinant, 0.0, 1.0);
 
     results[index] = QueryResult(
-        vec4(displacement, request.slot),
-        vec4(normal, 1.0),
-        vec4(crest, 0.0, 0.0, 0.0),
+        vec4(displacement, 0.0),
+        vec4(normal, crest),
+        vec4<u32>(request.slot, batch.generation, 1u, 0u),
     );
 }

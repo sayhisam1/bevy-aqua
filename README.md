@@ -232,6 +232,23 @@ shapes remain flat, matching their rendered geometry. The per-frame limit is
 256 probes. `WaveSurface::crest` exposes the same
 horizontal-compression source used to seed persistent whitecaps.
 
+### Maintainer GPU query test
+
+The ignored query regression needs a native hardware GPU and driver; it uses a
+32×32 offscreen target, with no window. From the repository root, run it alone
+under the shared GPU capture lock:
+
+```sh
+flock -x /tmp/apophany-capture.lock timeout --kill-after=10s 240s \
+  cargo test -p bevy-aqua-query --lib --locked gpu_tests::gpu_query_protocol -- \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+Build first with `cargo test -p bevy-aqua-query --lib --locked --no-run` if needed,
+so compilation does not consume the run timeout. Set `AQUA_QUERY_GPU_ARTIFACTS`
+to an absolute directory outside the repository to retain raw readback buffers.
+The test prints the adapter and fails if any protocol check fails.
+
 ### Spatial consistency (unreleased)
 
 These fixes make the renderer, queries, and baked fields agree about where

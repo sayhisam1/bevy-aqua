@@ -48,130 +48,372 @@ fn probes_ride_transformed_river_flow_and_body_levels() {
     }
 }
 
-// world_xz(2), slot, kind, flow(4): eight floats per request.
-const REQUEST_FLOATS: usize = 8;
-
-const FIRST_SLOT: u32 = 1;
-
-fn registry_with(entities: &[Entity]) -> (Registry, Vec<u32>) {
-    let mut registry = Registry::default();
-    let slots = entities
-        .iter()
-        .map(|entity| registry.assign(*entity).unwrap())
-        .collect();
-    (registry, slots)
-}
-
-fn test_entities(count: usize) -> Vec<Entity> {
-    let mut world = World::new();
-    (0..count).map(|_| world.spawn_empty().id()).collect()
-}
-
-#[test]
-fn slots_are_unique_and_reclaimed() {
-    let entities = test_entities(3);
-    let [a, b, c] = entities[..] else {
-        panic!("three entities")
-    };
-    let (mut registry, slots) = registry_with(&[a, b]);
-    assert_eq!(slots, vec![FIRST_SLOT, FIRST_SLOT + 1]);
-    assert_eq!(registry.entities[&slots[0]], a);
-
-    registry.reclaim(a);
-    assert!(!registry.slots.contains_key(&a));
-    assert!(!registry.entities.contains_key(&slots[0]));
-
-    // The freed slot is not reused; live probes keep stable identities.
-    assert_eq!(registry.assign(b), None);
-    assert_eq!(registry.assign(c), Some(3));
-}
-
-#[test]
-fn request_packing_round_trips_and_caps_capacity() {
-    let submissions: Vec<(u32, Vec2, f32, Vec4)> = (0..MAX_QUERIES + 3)
+// Protocol fixtures use the real extraction system and readback observer.
+// They supply bytes, not a CPU implementation of wave sampling.
+fn query_world(count: usize) -> (World, Vec<Entity>, Entity) {
+    let mut main = MainWorld::default();
+    main.init_resource::<Registry>();
+    main.init_resource::<ResolvedWaterBodies>();
+    main.insert_resource(Ocean::default());
+    let entities = (0..count)
         .map(|index| {
-            (
-                index + 1,
-                Vec2::new(index as f32, -(index as f32)),
-                0.0,
-                Vec4::ZERO,
-            )
+            main.spawn((
+                WaveQuery,
+                GlobalTransform::from(Transform::from_xyz(index as f32, 0.0, 0.0)),
+            ))
+            .id()
         })
         .collect();
-    let (bytes, count) = pack_requests(&submissions);
-    assert_eq!(count, MAX_QUERIES as usize);
-    assert_eq!(
-        bytes.len(),
-        count * QueryRequest::SHADER_SIZE.get() as usize
-    );
+    let readback = main.spawn_empty().observe(apply_results).id();
+    let mut update = Schedule::new(Update);
+    update.add_systems((reclaim_slots, assign_slots).chain());
+    main.add_schedule(update);
+    let mut render = World::new();
+    render.insert_resource(main);
+    let mut extract = Schedule::new(ExtractSchedule);
+    extract.add_systems(extract_wave_queries);
+    render.add_schedule(extract);
+    (render, entities, readback)
+}
 
-    let floats: Vec<f32> = bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|chunk| f32::from_le_bytes(*chunk))
-        .collect();
-    assert_eq!(floats[0], 0.0);
-    assert_eq!(floats[1], 0.0);
-    assert_eq!(floats[2], 1.0); // first slot echo
-    let stride = REQUEST_FLOATS;
-    assert_eq!(floats[stride], 1.0); // second request x
-    assert_eq!(floats[stride + 2], 2.0); // second slot echo
+fn extract(render: &mut World) -> Vec<QueryRequest> {
+    render.resource_mut::<MainWorld>().run_schedule(Update);
+    render.run_schedule(ExtractSchedule);
+    let batch = render.resource::<Batch>();
+    if batch.count == 0 {
+        assert!(batch.bytes.is_empty());
+        return Vec::new();
+    }
+    assert_eq!(batch.bytes.len(), batch.count * 32);
+    bevy::render::render_resource::encase::StorageBuffer::new(batch.bytes.as_slice())
+        .create()
+        .unwrap()
+}
+
+// Independent storage ABI: 48 bytes; float4 displacement at 0, float4
+// normal/crest at 16, uint4 slot/generation/validity/reserved at 32.
+fn result_bytes(slot: u32, generation: u32, height: f32, valid: u32) -> Vec<u8> {
+    let mut bytes = [0.0_f32, height, 0.0, 0.0, 0.0, 2.0, 0.0, 0.75]
+        .map(f32::to_le_bytes)
+        .concat();
+    bytes.extend([slot, generation, valid, 0].map(u32::to_le_bytes).concat());
+    bytes
+}
+
+fn deliver(render: &mut World, readback: Entity, data: Vec<u8>) {
+    render
+        .resource_mut::<MainWorld>()
+        .trigger(ReadbackComplete {
+            entity: readback,
+            data,
+        });
+}
+
+fn surface(render: &World, entity: Entity) -> WaveSurface {
+    *render
+        .resource::<MainWorld>()
+        .get::<WaveSurface>(entity)
+        .unwrap()
 }
 
 #[test]
-fn result_decode_filters_invalid_and_unknown_rows() {
-    let live = test_entities(1)[0];
-    let (registry, slots) = registry_with(&[live]);
-    let slot = slots[0] as f32;
+fn integer_request_batch_and_result_abi_round_trip() {
+    // Adjacent IDs beyond f32's exact integer range must remain distinct.
+    let submissions = [
+        (
+            0x0100_0001,
+            Vec2::new(1.25, -2.5),
+            2,
+            Vec4::new(3.0, 4.0, 5.0, 6.0),
+        ),
+        (0x0100_0002, Vec2::ZERO, 1, Vec4::ZERO),
+    ];
+    let (bytes, count) = pack_requests(&submissions);
+    let mut expected = [1.25_f32, -2.5].map(f32::to_le_bytes).concat();
+    expected.extend([0x0100_0001_u32, 2].map(u32::to_le_bytes).concat());
+    expected.extend([3.0_f32, 4.0, 5.0, 6.0].map(f32::to_le_bytes).concat());
+    expected.extend([0.0_f32, 0.0].map(f32::to_le_bytes).concat());
+    expected.extend([0x0100_0002_u32, 1].map(u32::to_le_bytes).concat());
+    expected.extend([0_u8; 16]);
+    assert_eq!(count, 2);
+    assert_eq!(bytes, expected);
 
-    let make_record =
-        |displacement: [f32; 3], echo: f32, normal: [f32; 3], validity: f32, crest: f32| {
-            let record = [
-                displacement[0],
-                displacement[1],
-                displacement[2],
-                echo,
-                normal[0],
-                normal[1],
-                normal[2],
-                validity,
-                crest,
-                0.0,
-                0.0,
-                0.0,
-            ];
-            record.map(f32::to_le_bytes).concat()
-        };
-    let mut data = Vec::new();
-    data.extend(make_record(
-        [1.0, 2.0, 3.0],
-        slot,
-        [0.0, 1.0, 0.0],
-        1.0,
-        0.75,
-    ));
-    data.extend(make_record(
-        [9.0, 9.0, 9.0],
-        999.0,
-        [0.0, 1.0, 0.0],
-        1.0,
-        0.0,
-    ));
-    data.extend(make_record(
-        [8.0, 8.0, 8.0],
-        slot,
-        [0.0, 1.0, 0.0],
-        0.0,
-        0.0,
-    ));
+    let mut uniform = Vec::<u8>::new();
+    bevy::render::render_resource::encase::UniformBuffer::new(&mut uniform)
+        .write(&QueryBatch {
+            count: 65,
+            generation: 0xf123_4567,
+            reserved: UVec2::ZERO,
+        })
+        .unwrap();
+    assert_eq!(
+        uniform,
+        [65_u32, 0xf123_4567, 0, 0].map(u32::to_le_bytes).concat()
+    );
 
-    let samples = decode_results(&data, &registry.entities);
-    assert_eq!(samples.len(), 1);
-    assert_eq!(samples[0].0, live);
-    assert_eq!(samples[0].1, Vec3::new(1.0, 2.0, 3.0));
-    assert_eq!(samples[0].2, Vec3::new(0.0, 1.0, 0.0));
-    assert_eq!(samples[0].3, 0.75);
+    let raw = result_bytes(0x0100_0001, 0xf123_4567, -3.5, 1);
+    let results: Vec<QueryResult> =
+        bevy::render::render_resource::encase::StorageBuffer::new(raw.as_slice())
+            .create()
+            .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].metadata,
+        UVec4::new(0x0100_0001, 0xf123_4567, 1, 0)
+    );
+    assert_eq!(results[0].displacement, Vec4::new(0.0, -3.5, 0.0, 0.0));
+    assert_eq!(results[0].normal_crest, Vec4::new(0.0, 2.0, 0.0, 0.75));
+    let mut round_trip = Vec::<u8>::new();
+    bevy::render::render_resource::encase::StorageBuffer::new(&mut round_trip)
+        .write(&results)
+        .unwrap();
+    assert_eq!(round_trip, raw);
+}
+
+#[test]
+fn shrinking_batches_reject_old_duplicate_tails_and_zero_batch_readbacks() {
+    // Includes [A, B] -> [B] -> [] and a workgroup-boundary crossing.
+    for count in [2, 65] {
+        let (mut render, entities, readback) = query_world(count);
+        let requests = extract(&mut render);
+        assert_eq!(requests.len(), count);
+        let old_generation = render.resource::<Batch>().generation;
+        let survivor = *entities.last().unwrap();
+        let slot = render.resource::<MainWorld>().resource::<Registry>().slots[&survivor];
+        for &entity in &entities[..count - 1] {
+            render.resource_mut::<MainWorld>().despawn(entity);
+        }
+        render
+            .resource_mut::<MainWorld>()
+            .entity_mut(survivor)
+            .insert(GlobalTransform::from(Transform::from_xyz(91.0, 0.0, -17.0)));
+        let requests = extract(&mut render);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].slot, slot);
+        assert_eq!(requests[0].world_xz, Vec2::new(91.0, -17.0));
+        let generation = render.resource::<Batch>().generation;
+        let mut rows = result_bytes(slot, generation, 7.0, 1);
+        rows.extend(result_bytes(slot, old_generation, -99.0, 1));
+        rows.resize(MAX_QUERIES as usize * 48, 0);
+        deliver(&mut render, readback, rows);
+        assert_eq!(surface(&render, survivor).displacement.y, 7.0);
+        assert_eq!(surface(&render, survivor).normal, Vec3::Y);
+        assert_eq!(surface(&render, survivor).crest, 0.75);
+        // Separate older readbacks and same-generation duplicates also lose.
+        deliver(
+            &mut render,
+            readback,
+            result_bytes(slot, old_generation, -80.0, 1),
+        );
+        deliver(
+            &mut render,
+            readback,
+            result_bytes(slot, generation, -70.0, 1),
+        );
+        assert_eq!(surface(&render, survivor).displacement.y, 7.0);
+
+        render
+            .resource_mut::<MainWorld>()
+            .remove_resource::<Ocean>();
+        assert!(extract(&mut render).is_empty());
+        assert_eq!(surface(&render, survivor), WaveSurface::default());
+        deliver(
+            &mut render,
+            readback,
+            result_bytes(slot, generation, 50.0, 1),
+        );
+        assert_eq!(surface(&render, survivor), WaveSurface::default());
+    }
+}
+
+#[test]
+fn delayed_results_survive_submission_lag_but_not_exit_and_reentry() {
+    let (mut render, entities, readback) = query_world(1);
+    let probe = entities[0];
+    {
+        let mut main = render.resource_mut::<MainWorld>();
+        main.remove_resource::<Ocean>();
+        let owner = main.spawn_empty().id();
+        main.resource_mut::<ResolvedWaterBodies>().0.push(
+            ResolvedWaterBody::resolve(
+                owner,
+                &bevy_aqua_core::WaterShape::Circle { radius: 10.0 },
+                None,
+                &GlobalTransform::IDENTITY,
+            )
+            .unwrap(),
+        );
+    }
+    render
+        .resource_mut::<MainWorld>()
+        .resource_mut::<Registry>()
+        .next_slot = 0x0100_0000;
+    let slot = extract(&mut render)[0].slot;
+    let first = render.resource::<Batch>().generation;
+    extract(&mut render);
+    let second = render.resource::<Batch>().generation;
+    // A result newer than any submission must not consume the applied barrier.
+    deliver(
+        &mut render,
+        readback,
+        result_bytes(slot, second + 1, 90.0, 1),
+    );
+    assert!(!surface(&render, probe).valid);
+    deliver(&mut render, readback, result_bytes(slot, first, 2.0, 1));
+    assert_eq!(surface(&render, probe).displacement.y, 2.0);
+    deliver(&mut render, readback, result_bytes(slot, second, 3.0, 0));
+    assert_eq!(surface(&render, probe).displacement.y, 2.0);
+    deliver(&mut render, readback, result_bytes(slot, second, 3.0, 1));
+    assert_eq!(surface(&render, probe).displacement.y, 3.0);
+
+    render
+        .resource_mut::<MainWorld>()
+        .entity_mut(probe)
+        .insert(GlobalTransform::from(Transform::from_xyz(50.0, 0.0, 0.0)));
+    assert!(extract(&mut render).is_empty());
+    render
+        .resource_mut::<MainWorld>()
+        .entity_mut(probe)
+        .insert(GlobalTransform::IDENTITY);
+    assert_eq!(extract(&mut render).len(), 1);
+    let reentry = render.resource::<Batch>().generation;
+    deliver(&mut render, readback, result_bytes(slot, second, 99.0, 1));
+    assert!(!surface(&render, probe).valid);
+    deliver(&mut render, readback, result_bytes(slot, reentry, 4.0, 1));
+    assert_eq!(surface(&render, probe).displacement.y, 4.0);
+}
+
+#[test]
+fn removed_slots_and_invalid_transforms_cannot_accept_delayed_results() {
+    let (mut render, entities, readback) = query_world(1);
+    let old_entity = entities[0];
+    let old_slot = extract(&mut render)[0].slot;
+    let old_generation = render.resource::<Batch>().generation;
+    render.resource_mut::<MainWorld>().despawn(old_entity);
+    let replacement = render
+        .resource_mut::<MainWorld>()
+        .spawn((WaveQuery, GlobalTransform::IDENTITY))
+        .id();
+    let slot = extract(&mut render)[0].slot;
+    assert_ne!(old_slot, slot);
+    deliver(
+        &mut render,
+        readback,
+        result_bytes(old_slot, old_generation, 100.0, 1),
+    );
+    assert!(!surface(&render, replacement).valid);
+    let generation = render.resource::<Batch>().generation;
+    deliver(
+        &mut render,
+        readback,
+        result_bytes(slot, generation, 1.0, 1),
+    );
+    assert!(surface(&render, replacement).valid);
+    render
+        .resource_mut::<MainWorld>()
+        .entity_mut(replacement)
+        .insert(GlobalTransform::from(Transform::from_xyz(
+            f32::NAN,
+            0.0,
+            0.0,
+        )));
+    assert!(extract(&mut render).is_empty());
+    deliver(
+        &mut render,
+        readback,
+        result_bytes(slot, generation, 100.0, 1),
+    );
+    assert!(!surface(&render, replacement).valid);
+    render
+        .resource_mut::<MainWorld>()
+        .entity_mut(replacement)
+        .remove::<GlobalTransform>();
+    assert!(extract(&mut render).is_empty());
+    deliver(
+        &mut render,
+        readback,
+        result_bytes(slot, generation, 100.0, 1),
+    );
+    assert!(!surface(&render, replacement).valid);
+}
+
+#[test]
+fn same_frame_query_removal_and_readdition_gets_a_new_slot() {
+    let (mut render, entities, readback) = query_world(1);
+    let probe = entities[0];
+    let old_slot = extract(&mut render)[0].slot;
+    let generation = render.resource::<Batch>().generation;
+    deliver(
+        &mut render,
+        readback,
+        result_bytes(old_slot, generation, 3.0, 1),
+    );
+    assert!(surface(&render, probe).valid);
+    render
+        .resource_mut::<MainWorld>()
+        .entity_mut(probe)
+        .remove::<WaveQuery>();
+    render
+        .resource_mut::<MainWorld>()
+        .entity_mut(probe)
+        .insert(WaveQuery);
+    let slot = extract(&mut render)[0].slot;
+    assert_ne!(slot, old_slot);
+    deliver(
+        &mut render,
+        readback,
+        result_bytes(old_slot, generation, 100.0, 1),
+    );
+    assert!(!surface(&render, probe).valid);
+}
+
+#[test]
+fn generation_wrap_keeps_delayed_results_ordered() {
+    let (mut render, entities, readback) = query_world(1);
+    let probe = entities[0];
+    render
+        .resource_mut::<MainWorld>()
+        .resource_mut::<Registry>()
+        .generation = u32::MAX - 1;
+    let slot = extract(&mut render)[0].slot;
+    extract(&mut render);
+    assert_eq!(render.resource::<Batch>().generation, 0);
+    deliver(&mut render, readback, result_bytes(slot, u32::MAX, 1.0, 1));
+    assert_eq!(surface(&render, probe).displacement.y, 1.0);
+    deliver(&mut render, readback, result_bytes(slot, 0, 2.0, 1));
+    deliver(&mut render, readback, result_bytes(slot, u32::MAX, 9.0, 1));
+    assert_eq!(surface(&render, probe).displacement.y, 2.0);
+}
+
+#[test]
+fn over_budget_probes_keep_their_previous_sample() {
+    let (mut render, entities, _) = query_world(MAX_QUERIES as usize + 1);
+    extract(&mut render);
+    let previous = WaveSurface {
+        displacement: Vec3::new(0.0, 8.0, 0.0),
+        valid: true,
+        ..default()
+    };
+    for &entity in &entities {
+        render
+            .resource_mut::<MainWorld>()
+            .entity_mut(entity)
+            .insert(previous);
+    }
+    let requests = extract(&mut render);
+    assert_eq!(requests.len(), MAX_QUERIES as usize);
+    let main = render.resource::<MainWorld>();
+    let registry = main.resource::<Registry>();
+    let skipped: Vec<_> = entities
+        .iter()
+        .filter(|&&entity| {
+            let slot = registry.slots[&entity];
+            !requests.iter().any(|request| request.slot == slot)
+        })
+        .collect();
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(surface(&render, *skipped[0]), previous);
+    assert!(!registry.probes[&registry.slots[skipped[0]]].accepting);
 }
 
 #[test]
@@ -198,6 +440,6 @@ fn ocean_query_ownership_is_world_anchored_and_sampling_remains_advected() {
     assert!(shader.contains("world_xz + vec2(0.0, texel_width)"));
     assert!(shader.contains("if request.flow.w > 0.0"));
     assert!(shader.contains("river_surface(request.world_xz, request)"));
-    assert!(shader.contains("if request.kind > 0.5"));
+    assert!(shader.contains("if request.kind != 0u"));
     assert!(shader.contains("alpha = max(alpha, detail_alpha);"));
 }
