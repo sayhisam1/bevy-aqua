@@ -141,20 +141,14 @@ fn fragment(
     }
     var t_end = min(t_scene, PATH_LENGTH_MAX);
     let facet_up = normalize(volume.interface_normal.xyz);
+    // The mesh already draws the displaced surface. Fill only the cap the near
+    // plane clips away. Other empty pixels keep the framebuffer.
     if dot(rd_world, facet_up) > 1e-6 && raw_depth <= 0.0 {
-        // Reconstruct a clipped exit from the camera's sampled local tangent
-        // plane. Every upward ray in the unbounded single-sheet ocean must
-        // eventually leave the water, so its local plane also closes later
-        // no-depth gaps. Bounded bodies retain the stricter sub-near-only path
-        // because their open side walls need explicit lateral clipping.
         let t_surface = intersect_local_surface_metres(camera, rd_world, plane, facet_up);
-        scene = vec3(0.0);
-        if t_surface > 0.0 {
+        let clipped_before_near = t_surface > 0.0 && t_surface <= ray.near_distance + 1e-4;
+        if clipped_before_near {
             t_end = min(t_end, t_surface);
-            let clipped_before_near = t_surface <= ray.near_distance + 1e-4;
-            if clipped_before_near || volume.environment.z > 0.5 {
-                scene = terminal_underside_radiance(rd_world, facet_up);
-            }
+            scene = terminal_underside_radiance(rd_world, facet_up);
         }
     }
     let d0 = max(plane - camera_y, 0.0);

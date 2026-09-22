@@ -171,8 +171,9 @@ default. The feature reuses `WaterOptics`; its new `scatter_tint` and
 optional approximation also attenuates emissive and local-light contributions.
 
 This first integration uses a homogeneous medium and a local camera wave sample
-with roughly one frame of GPU readback latency. It does not claim exact displaced
-per-pixel waterline closure, bounded-body side clipping, or multi-camera support.
+with roughly one frame of GPU readback latency. That sample fills a near-plane
+crossing only. It does not claim exact displaced per-pixel waterline closure,
+bounded-body side clipping, or multi-camera support.
 Near-plane crossings and fully folded wave geometry
 remain limited. Orthographic cameras skip the volume
 composite. Read [the underwater integration bounds](docs/underwater.md) before

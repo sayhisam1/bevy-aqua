@@ -36,10 +36,8 @@ frame of readback latency. Before a valid sample arrives, admission conservative
 uses the selected mean level. This is one camera sample, not exact per-pixel
 waterline closure. When a visible interface is clipped before the per-pixel near
 plane, the pass synthesizes an underside terminal from that sample's local tangent
-plane. The unbounded single-sheet ocean uses the same local plane to close upward
-no-depth gaps: every upward ray from a wet camera must eventually exit. Bounded
-bodies keep the stricter sub-near fallback because their open side walls need
-explicit lateral clipping. Fully folded waves and bounded-body side exits remain
+plane. Other empty pixels keep the framebuffer and the normal underwater path.
+Fully folded waves and bounded-body side exits remain
 unsupported. An upward depth hit
 through a missing water-surface fragment cannot be identified as air-side geometry;
 preserving real displaced crest/trough hits takes priority, so that rare gap can
