@@ -30,6 +30,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- FFT uniform uploads and dispatches use the same current-frame attenuation-bin
+  count across bed and shallow-water-attenuation transitions.
 - Wave queries dispatch only the active batch and preserve integer probe IDs.
   Stale readbacks cannot update removed probes or reopen an old water-entry epoch.
 - Wave queries retain prior samples while waves, pipelines, or GPU resources are

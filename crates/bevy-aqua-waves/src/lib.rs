@@ -286,9 +286,10 @@ pub fn update(
     frame.fft_uniform.params.x = time.elapsed_secs();
     frame.fft_uniform.params.y = settings.shallow_water_attenuation.clamp(0.0, 1.0);
     frame.fft_uniform.params.z = 1.0;
-    frame.fft_uniform.mode.x = frame.fft_bins as f32;
+    let fft_bins = fft::active_bin_count(settings.shallow_water_attenuation, bed.is_none());
+    frame.fft_uniform.mode.x = fft_bins as f32;
     frame.model = settings.model;
-    frame.fft_bins = fft::active_bin_count(settings.shallow_water_attenuation, bed.is_none());
+    frame.fft_bins = fft_bins;
 }
 
 /// Per-frame wave simulation resources: textures, uniforms, model gates.

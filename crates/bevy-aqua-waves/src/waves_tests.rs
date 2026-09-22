@@ -53,6 +53,79 @@ fn displacement_bounds_follow_active_wave_source() {
 }
 
 #[test]
+fn update_keeps_fft_uniform_and_dispatch_bins_in_lockstep() {
+    let layout = lod::GpuLayout::new(&lod::layout(Vec2::ZERO), Vec2::ZERO, 0.0);
+    let uniform = make_uniform(layout.clone(), 1.0, 0.0);
+    let settings = OceanWaves {
+        model: WaveModel::Spectral,
+        ..default()
+    };
+    let frame = Frame {
+        output: default(),
+        surface: default(),
+        raw: default(),
+        scratch_a: default(),
+        scratch_b: default(),
+        h0: [default()],
+        fft_state: [default(), default()],
+        fft_scratch: [default(), default()],
+        uniform,
+        fft_uniform: fft::Uniform {
+            layout: layout.clone(),
+            params: Vec4::ZERO,
+            mode: Vec4::new(fft::ATTENUATION_BINS as f32, 0.0, 0.0, 0.0),
+        },
+        model: WaveModel::Spectral,
+        analytic_variance: [0.0; LOD_COUNT],
+        spectral_variance: [0.0; 8],
+        fft_bins: fft::ATTENUATION_BINS,
+    };
+    let mut app = App::new();
+    app.insert_resource(Time::<()>::default())
+        .insert_resource(lod::Data::new(default(), default(), default(), layout))
+        .insert_resource(settings)
+        .insert_resource(frame)
+        .add_systems(Update, update);
+
+    let assert_bins = |app: &App, expected: u32| {
+        let frame = app.world().resource::<Frame>();
+        assert_eq!(frame.fft_bins, expected);
+        assert_eq!(frame.fft_uniform.mode.x, expected as f32);
+    };
+
+    // Startup without terrain must collapse both consumers in the same update.
+    app.update();
+    assert_bins(&app, 1);
+
+    // Late bed insertion enables all attenuation bins in that update.
+    app.world_mut().insert_resource(BedHeightMap {
+        image: default(),
+        origin: Vec2::ZERO,
+        size: Vec2::ONE,
+        height_range: [0.0, 1.0],
+    });
+    app.update();
+    assert_bins(&app, fft::ATTENUATION_BINS);
+
+    // Runtime attenuation changes exercise both transition directions.
+    app.world_mut()
+        .resource_mut::<OceanWaves>()
+        .shallow_water_attenuation = 0.0;
+    app.update();
+    assert_bins(&app, 1);
+    app.world_mut()
+        .resource_mut::<OceanWaves>()
+        .shallow_water_attenuation = 1.0;
+    app.update();
+    assert_bins(&app, fft::ATTENUATION_BINS);
+
+    // Removing the bed returns both consumers to the one-bin path immediately.
+    app.world_mut().remove_resource::<BedHeightMap>();
+    app.update();
+    assert_bins(&app, 1);
+}
+
+#[test]
 fn gerstner_positive_direction_is_travel_direction() {
     let mut wave = generate_components(1.0, 0.0)[0];
     wave.direction = Vec2::X;
