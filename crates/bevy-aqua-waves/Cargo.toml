@@ -15,5 +15,8 @@ bevy = { workspace = true, features = [
     "bevy_render",
 ] }
 
+[dev-dependencies]
+bevy = { workspace = true, features = ["bevy_window"] }
+
 [lints]
 workspace = true

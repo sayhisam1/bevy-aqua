@@ -336,3 +336,103 @@ fn surface_params_rust_and_wgsl_mirror_field_for_field() {
         .expect("surface params write");
     assert_eq!(bytes.len(), 16 * (rust.len() + 1));
 }
+
+#[test]
+fn bed_lifecycle_updates_texture_and_decode_together_without_caustics() {
+    let mut world = World::new();
+    world.init_resource::<Assets<Image>>();
+    world.init_resource::<bed::GpuFallback>();
+    world.init_resource::<ViewPos>();
+    world.init_resource::<ViewDetail>();
+    world.init_resource::<AquaDebug>();
+    world.init_resource::<CausticsSunVisibility>();
+    world.init_resource::<OceanWaves>();
+    world.insert_resource(ViewSeaLevel(7.0));
+    world.insert_resource(AquaSettings {
+        caustics: None,
+        ..default()
+    });
+    let fallback = world.resource::<bed::GpuFallback>().0.clone();
+    let layout = GpuLayout::new(&layout(Vec2::ZERO), Vec2::ZERO, 0.0);
+    let mut materials = Assets::<CascadeMaterial>::default();
+    let material = materials.add(CascadeMaterial {
+        texture: Handle::default(),
+        layout: layout.clone(),
+        surface: SurfaceParams::default(),
+        sea_floor: fallback.clone(),
+        detail_normal: Handle::default(),
+        foam: Handle::default(),
+        foam_pattern: Handle::default(),
+        fft_surface: Handle::default(),
+        fields: FieldParams::none(),
+        field_maps: Handle::default(),
+        reflection_a: Handle::default(),
+        reflection_b: Handle::default(),
+        reflections: PlanarReflectionParams::default(),
+        caustics: Handle::default(),
+    });
+    world.insert_resource(materials);
+    world.insert_resource(Data::new(
+        material.clone(),
+        Handle::default(),
+        Handle::default(),
+        layout,
+    ));
+    let mut schedule = Schedule::default();
+    schedule.add_systems(update);
+    schedule.run(&mut world);
+    schedule.run(&mut world); // Ordinary resource change flags are now clear.
+
+    for (origin, step, range) in [
+        (Vec2::new(2.0, 3.0), 4.0, [-8.0, -2.0]),
+        (Vec2::new(-9.0, 6.0), 2.0, [1.0, 5.0]),
+    ] {
+        let image = world.resource_mut::<Assets<Image>>().add(Image::default());
+        world.insert_resource(bed::BedHeightMap {
+            image: image.clone(),
+            origin,
+            size: Vec2::splat(step),
+            height_range: range,
+        });
+        schedule.run(&mut world);
+        let materials = world.resource::<Assets<CascadeMaterial>>();
+        let actual = materials.get(&material).unwrap();
+        assert_eq!(actual.sea_floor, image);
+        assert_eq!(
+            actual.layout.bed_transform,
+            Vec4::new(origin.x, origin.y, 1.0 / step, 1.0 / step)
+        );
+        assert_eq!(
+            actual.layout.bed_range.xyz(),
+            Vec3::new(range[0], range[1] - range[0], 7.0)
+        );
+        assert_eq!(
+            actual.layout.bed_range,
+            world.resource::<Data>().layout.bed_range
+        );
+        assert_eq!(actual.surface.caustics, Vec4::ZERO);
+        schedule.run(&mut world);
+    }
+    // Removal has no Res::is_changed flag; the desired fallback handle is the signal.
+    world.remove_resource::<bed::BedHeightMap>();
+    schedule.run(&mut world);
+    let materials = world.resource::<Assets<CascadeMaterial>>();
+    let actual = materials.get(&material).unwrap();
+    assert_eq!(actual.sea_floor, fallback);
+    assert_eq!(actual.layout.bed_range.y, -1.0);
+    assert_eq!(actual.layout.bed_range.z, 7.0);
+    assert_eq!(world.resource::<Data>().layout.bed_range.y, -1.0);
+
+    let fallback = world.resource::<bed::GpuFallback>().0.clone();
+    world.insert_resource(bed::BedHeightMap {
+        image: fallback,
+        origin: Vec2::ZERO,
+        size: Vec2::ONE,
+        height_range: [0.0, 1.0],
+    });
+    schedule.run(&mut world);
+    schedule.run(&mut world);
+    world.remove_resource::<bed::BedHeightMap>();
+    schedule.run(&mut world);
+    assert_eq!(world.resource::<Data>().layout.bed_range.y, -1.0);
+}
