@@ -1,5 +1,16 @@
 # Migration notes (unreleased)
 
+## Physical medium crate
+
+The `aqua::medium` WGSL module now lives in `bevy-aqua-medium`. The shader
+import path and every equation, name, and constant are unchanged. Root
+`bevy-aqua` users and callers of `bevy_aqua_optics::add_shader` need no code
+change because optics registers its medium dependency.
+
+Direct users that loaded `embedded://bevy_aqua_optics/medium.wgsl` must depend
+on `bevy-aqua-medium`, call `bevy_aqua_medium::add_shader`, and stop loading
+the old asset path. There is no alias for the removed path.
+
 ## Surface detail and wave heading
 
 `OceanWaves::wind_direction_degrees` now consistently means the dominant

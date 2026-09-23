@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- The `bevy-aqua-medium` leaf crate, which owns the shared physical-medium
+  WGSL module (`aqua::medium`) used by surface and underwater shading.
 - Opt-in `underwater` integration with a homogeneous single-scattering volume,
   exact water-to-air Fresnel/TIR underside shading, and viewport-correct air-window
   distortion, based on PR #9 by [@wellscrosby](https://github.com/wellscrosby).
