@@ -47,8 +47,9 @@ ABI must populate it.
 
 4. **The first integration has deliberate bounds.** It uses a homogeneous
    horizontal mean-plane volume and one active Aqua view. It does not implement
-   a displaced per-pixel waterline, screen-space reflections, bounded-body side
-   clipping, or multi-camera Aqua rendering. Orthographic cameras safely skip
+   a displaced per-pixel waterline, bounded-body side clipping, or multi-camera
+   Aqua rendering. `AquaSettings::screen_space_reflections` is a separate
+   surface march, off by default. Orthographic cameras safely skip
    the volume composite. Multisampled depth is conservatively resolved, but its
    native MSAA-off/default capture checks pass; other configurations and browser
    runtime behavior remain unverified. See
@@ -61,11 +62,15 @@ builds.
 Code that mirrors these cross-crate types must update both Rust and WGSL:
 
 - `SurfaceParams::fog_density.w` now carries the authored ocean
-  `WaterOptics::scatter_scale` for underwater paths. Front-face ocean shading
-  deliberately retains its historical scale of `1.0`.
+  `WaterOptics::scatter_scale` for the shared medium integral on both
+  the front-face volume path and underwater shading.
 - `SurfaceParams::medium_scatter: Vec4` is inserted after `sss_tint`; RGB stores
   `scatter_tint` and W stores `scattering_asymmetry`. Its encoded size changes
   from 304 to 320 bytes.
+- `SurfaceParams::deep_color`, `grazing_color`, and `shallow_color` are
+  removed. The encoded size changes from 320 to 272 bytes. Remove these
+  fields from `WaterOptics` literals as well; tune `extinction`,
+  `scatter_scale`, and `scatter_tint` instead.
 - `BodyParams::optics_b.w` stores bounded-body `scattering_asymmetry`.
 - `BodyParams::optics_c: Vec4` is appended; RGB stores bounded-body
   `scatter_tint` and W is reserved. The encoded `BodyParams` size therefore

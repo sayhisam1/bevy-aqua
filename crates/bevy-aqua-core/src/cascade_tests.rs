@@ -285,3 +285,54 @@ fn absent_ocean_vertices_return_flat_after_rivers() {
     assert!(shader.contains("let bounded = slot > 0u;"));
     assert!(shader.contains("result.bounded = bounded;"));
 }
+
+#[test]
+fn far_tier_packs_a_valid_range_and_the_reflection_switch() {
+    let defaults = AquaSettings::default();
+    assert_eq!(far_tier(&defaults).z, 0.0, "SSR must default off");
+    let enabled = AquaSettings {
+        screen_space_reflections: true,
+        ..default()
+    };
+    assert_eq!(far_tier(&enabled).z, 1.0);
+    let inverted = AquaSettings {
+        far_tier_start: -5.0,
+        far_tier_end: -10.0,
+        ..default()
+    };
+    let packed = far_tier(&inverted);
+    assert_eq!((packed.x, packed.y), (0.0, 1.0));
+}
+
+#[test]
+fn surface_params_rust_and_wgsl_mirror_field_for_field() {
+    fn fields<'a>(source: &'a str, open: &str) -> Vec<&'a str> {
+        source
+            .split(open)
+            .nth(1)
+            .unwrap()
+            .split('}')
+            .next()
+            .unwrap()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("///"))
+            .map(|line| {
+                let name = line.trim_start_matches("pub ").split(':').next().unwrap();
+                name.trim()
+            })
+            .collect()
+    }
+    let rust = fields(include_str!("cascade.rs"), "pub struct SurfaceParams {");
+    let wgsl = fields(
+        include_str!("cascade/common.wgsl"),
+        "struct SurfaceParams {",
+    );
+    assert_eq!(rust, wgsl);
+    // Every member is a full vec4, so encase and naga agree on the layout.
+    let mut bytes: Vec<u8> = Vec::new();
+    bevy::render::render_resource::encase::UniformBuffer::new(&mut bytes)
+        .write(&SurfaceParams::default())
+        .expect("surface params write");
+    assert_eq!(bytes.len(), 16 * (rust.len() + 1));
+}

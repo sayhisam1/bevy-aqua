@@ -30,7 +30,7 @@
 #import bevy_aqua_core::material::{BodyLightingState, CameraDepthDebug, CameraDepthPath, FoamState, LocalLightingState, MediumState, NearSurface, PrimaryLightState, SurfaceVertexOutput, TransmissionState}
 #import aqua::light::incident::{GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, local_light_contribution, resolve_primary_light, safe_normalize, sample_local_light, smith_masking_shadowing, strongest_incident_directional_light, view_direction}
 #import aqua::light::environment::{sample_diffuse_environment, sample_environment}
-#import aqua::optics::{camera_depth_path, deep_water_weight, empty_camera_depth_path, far_field_water, far_path_opaque, resolve_near_surface, resolve_transmission, sample_water_medium, unresolved_wave_roughness}
+#import aqua::optics::{camera_depth_path, deep_water_weight, empty_camera_depth_path, far_field_water, far_path_opaque, resolve_near_surface, resolve_transmission, sample_water_medium, topside_screen_space_reflection, unresolved_wave_roughness}
 #ifdef UNDERWATER
 #import aqua::optics::shade_underside
 #endif
@@ -115,13 +115,10 @@ fn directional_scatter(
     surface_lod: u32,
     near: NearSurface,
     primary: PrimaryLightState,
-    medium: MediumState,
     to_view: vec3<f32>,
     mode: u32,
 ) -> vec3<f32> {
-    // Crest's authored deep/grazing colours are volume-scatter albedos. They
-    // carry no radiance until the scene environment illuminates them.
-    var scatter_colour = medium.deep_body_albedo * medium.diffuse_irradiance;
+    var scatter_colour = vec3(0.0);
     // Crest `OceanEmission.hlsl::ScatterColour`: backlit subsurface tint is
     // driven by horizontal-displacement pinch, not absolute wave height.
     if mode >= DEBUG_MODE_BEAUTY
@@ -292,6 +289,13 @@ fn shade_environment_and_sun(
     );
     let planar = sample_planar_reflection(world_position, surface_level, near.lighting_normal, body_lighting.environment_roughness);
     reflected_radiance = mix(reflected_radiance, planar.color, planar.weight);
+    reflected_radiance = topside_screen_space_reflection(
+        reflected_radiance,
+        world_position,
+        reflection,
+        body_lighting.environment_roughness,
+        surface_level,
+    );
 
     // Crest `OceanReflection.hlsl::ApplyReflectionSky`: the directional light
     // is a bounded reflection-vector lobe added before the Fresnel blend.
@@ -561,7 +565,6 @@ fn fragment(
     let body_optics = bounded && params.optics_a.w > 0.5;
     set_body_optics(
         select(surface.fog_density.rgb, params.optics_a.rgb, body_optics),
-        select(1.0, params.optics_b.x, body_optics),
         select(surface.fog_density.w, params.optics_b.x, body_optics),
         select(surface.medium_scatter.rgb, params.optics_c.rgb, body_optics),
         select(surface.medium_scatter.w, params.optics_b.w, body_optics),
@@ -641,7 +644,7 @@ fn fragment(
     }
 
     let primary = resolve_primary_light(in, near.normal);
-    let medium = sample_water_medium(in, surface_lod, near.lighting_normal, to_view, mode);
+    let medium = sample_water_medium(in, surface_lod, near.lighting_normal, mode);
     if mode == DEBUG_MODE_SEA_FLOOR {
         let depth = clamp(medium.water_depth / surface.sea_floor.y, 0.0, 1.0);
         return vec4(1.0 - depth, 0.0, depth, 1.0);
@@ -674,16 +677,11 @@ fn fragment(
         surface_lod,
         near,
         primary,
-        medium,
         to_view,
         mode,
     );
-    // Deep-pool darkness: bodies scale the ocean scatter endpoint down so
-    // colour comes from the bed through low-extinction water, not from a
-    // turquoise volume endpoint.
-    let scaled_scatter = scatter * invocation_scatter_scale();
     let transmission =
-        resolve_transmission(in, near.normal, scaled_scatter, medium, foam, primary, mode, slot);
+        resolve_transmission(in, near.normal, to_view, foam, primary, mode, slot);
     if transmission.handled {
         return transmission.output;
     }
@@ -694,7 +692,11 @@ fn fragment(
         medium,
         foam,
         to_view,
-        transmission.body,
+        // Subsurface light scatters inside the visible water column: weight it
+        // by that column's opacity so shallow beds do not glow, and by the
+        // particle scatter scale so clear pools stay dark.
+        transmission.body
+            + scatter * invocation_scatter_scale() * transmission.column_opacity,
         mode,
     );
     let reflected = shade_environment_and_sun(

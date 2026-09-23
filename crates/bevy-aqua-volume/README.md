@@ -17,6 +17,6 @@ Looking toward the sun is brighter via Henyey-Greenstein using
 The pass automatically samples active `OceanView` cameras with `WaveQuery` and runs
 when the camera is below that local displaced level. GPU readback gives this camera
 sample roughly one frame of latency; an invalid initial sample conservatively uses the
-selected mean level.
+selected mean level. The sample fills a near-plane crossing only.
 
 See `../../docs/underwater.md` for supported behavior and current bounds.

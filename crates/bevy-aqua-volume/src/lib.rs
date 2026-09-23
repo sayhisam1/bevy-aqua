@@ -64,7 +64,6 @@ struct ExtractedVolume {
     surface_level: f32,
     camera_y: f32,
     interface_normal: Vec3,
-    unbounded_ocean: bool,
     optics: WaterOptics,
     receiver_relighting: bool,
 }
@@ -76,7 +75,6 @@ impl Default for ExtractedVolume {
             surface_level: 0.0,
             camera_y: 0.0,
             interface_normal: Vec3::Y,
-            unbounded_ocean: false,
             optics: WaterOptics::DEEP_OCEAN,
             receiver_relighting: false,
         }
@@ -92,7 +90,7 @@ fn sample_medium(
     ocean: Option<&Ocean>,
     settings: &AquaSettings,
     bodies: &[ResolvedWaterBody],
-) -> Option<(f32, WaterOptics, bool)> {
+) -> Option<(f32, WaterOptics)> {
     let mut best: Option<(f32, WaterOptics)> = None;
     for body in bodies {
         if body.contains(camera_xz) {
@@ -102,8 +100,7 @@ fn sample_medium(
             }
         }
     }
-    best.map(|(level, optics)| (level, optics, false))
-        .or_else(|| ocean.map(|ocean| (ocean.level, settings.water_optics, true)))
+    best.or_else(|| ocean.map(|ocean| (ocean.level, settings.water_optics)))
 }
 
 fn actual_surface_level(mean_level: f32, surface: &WaveSurface) -> f32 {
@@ -155,7 +152,7 @@ fn detect_underwater(
         return;
     };
     let camera = transform.translation();
-    let Some((mean_level, optics, unbounded_ocean)) =
+    let Some((mean_level, optics)) =
         sample_medium(camera.xz(), ocean.as_deref(), &settings, &bodies.0)
     else {
         *volume = ExtractedVolume::default();
@@ -168,7 +165,6 @@ fn detect_underwater(
         surface_level,
         camera_y: camera.y,
         interface_normal: interface_normal(wave_surface),
-        unbounded_ocean,
         optics,
         receiver_relighting: volume_settings.receiver_relighting,
     };
@@ -250,7 +246,7 @@ mod tests {
         let high = body(3.0, 2.0, Some(WaterOptics::TROPICAL));
         let ocean = Ocean { level: 5.0 };
         let sampled = sample_medium(Vec2::ZERO, Some(&ocean), &settings, &[low, high]).unwrap();
-        assert_eq!(sampled, (3.0, WaterOptics::TROPICAL, false));
+        assert_eq!(sampled, (3.0, WaterOptics::TROPICAL));
     }
 
     #[test]
@@ -260,11 +256,11 @@ mod tests {
         let ocean = Ocean { level: 5.0 };
         assert_eq!(
             sample_medium(Vec2::ZERO, Some(&ocean), &settings, &[bounded.clone()]),
-            Some((2.0, WaterOptics::COASTAL, false))
+            Some((2.0, WaterOptics::COASTAL))
         );
         assert_eq!(
             sample_medium(Vec2::splat(2.0), Some(&ocean), &settings, &[bounded]),
-            Some((5.0, settings.water_optics, true))
+            Some((5.0, settings.water_optics))
         );
     }
 

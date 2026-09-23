@@ -5,16 +5,23 @@ fullscreen medium pass and compiles two-sided water-surface shading. Builds
 without the feature retain the original culling and above-water shader path.
 
 `WaterOptics::scatter_tint` and `scattering_asymmetry` control the homogeneous
-single-scattering medium. Existing presets keep their accepted extinction,
-scatter scale, and surface colours; the new tint defaults to white. The phase
-asymmetry is clamped by the shader to `[-0.99, 0.99]`.
+single-scattering medium. Existing presets keep their accepted extinction
+and scatter scale; the new tint defaults to white. The phase
+asymmetry is clamped by the shader to `[-0.99, 0.99]`. Above-water transmission
+and far water evaluate the same integral, converted to air as water-leaving
+radiance.
 
 The underside uses exact unpolarized water-to-air Fresnel and total internal
 reflection. Its air-window distortion is projected through the active camera
-and clamped in the active viewport. SSR is intentionally not included. Reflected
+and clamped in the active viewport. Reflected
 water-side rays use the same bounded homogeneous medium as the volume, including
 the active body’s scatter tint and phase asymmetry. The open fallback is evaluated
-in the resolved facet frame. A continuous shading-normal visibility clamp keeps
+in the resolved facet frame. When `AquaSettings::screen_space_reflections` is
+enabled, that reflected ray also marches the depth buffer. A hit is attenuated
+along the bounce. A miss, a rough lobe, or a ray that leaves the screen keeps
+the medium. Hits on the air side of the facet are rejected.
+
+A continuous shading-normal visibility clamp keeps
 resolved shading microdetail incident-facing before Fresnel, reflection,
 refraction, and medium evaluation, so the bounce remains in the local water
 halfspace even when its world-space Y component points upward. This does not
@@ -29,10 +36,8 @@ frame of readback latency. Before a valid sample arrives, admission conservative
 uses the selected mean level. This is one camera sample, not exact per-pixel
 waterline closure. When a visible interface is clipped before the per-pixel near
 plane, the pass synthesizes an underside terminal from that sample's local tangent
-plane. The unbounded single-sheet ocean uses the same local plane to close upward
-no-depth gaps: every upward ray from a wet camera must eventually exit. Bounded
-bodies keep the stricter sub-near fallback because their open side walls need
-explicit lateral clipping. Fully folded waves and bounded-body side exits remain
+plane. Other empty pixels keep the framebuffer and the normal underwater path.
+Fully folded waves and bounded-body side exits remain
 unsupported. An upward depth hit
 through a missing water-surface fragment cannot be identified as air-side geometry;
 preserving real displaced crest/trough hits takes priority, so that rare gap can

@@ -275,7 +275,7 @@ fn volume_uniform(volume: &ExtractedVolume) -> VolumeUniform {
         environment: Vec4::new(
             volume.optics.scattering_asymmetry,
             if volume.receiver_relighting { 1.0 } else { 0.0 },
-            if volume.unbounded_ocean { 1.0 } else { 0.0 },
+            0.0,
             0.0,
         ),
         sea: Vec4::new(volume.surface_level, volume.camera_y, 0.0, 0.0),
@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn local_tangent_exit_closes_sub_near_and_unbounded_ocean_gaps() {
+    fn near_clip_fills_sub_near_and_distant_gaps_stay_open() {
         fn local_exit(camera_y: f32, level: f32, ray: Vec3, normal: Vec3) -> f32 {
             (level - camera_y) * normal.y / ray.dot(normal)
         }
@@ -477,9 +477,10 @@ mod tests {
         assert!(visible > near + 1e-4);
 
         let shader = include_str!("volume.wgsl");
-        assert!(shader.contains("t_surface > 0.0"));
-        assert!(shader.contains("t_surface <= ray.near_distance + 1e-4"));
-        assert!(shader.contains("clipped_before_near || volume.environment.z > 0.5"));
+        assert!(shader.contains("t_surface > 0.0 && t_surface <= ray.near_distance + 1e-4"));
+        assert!(shader.contains("if clipped_before_near {"));
+        assert!(!shader.contains("volume.environment.z"));
+        assert!(!shader.contains("scene = vec3(0.0)"));
         assert!(shader.contains("raw_depth <= 0.0"));
         assert!(shader.contains("dot(rd_world, facet_up) > 1e-6"));
     }

@@ -16,8 +16,9 @@ fn compact(source: &str) -> String {
 }
 
 fn assert_shader_contains(fragment: &str) {
+    let sources = compact(OPTICS) + &compact(include_str!("screen.wgsl"));
     assert!(
-        compact(OPTICS).contains(&compact(fragment)),
+        sources.contains(&compact(fragment)),
         "WGSL contract changed: {fragment}"
     );
 }
@@ -212,16 +213,18 @@ fn wgsl_beauty_gates_and_attenuates_the_accepted_path() {
     assert_in_order(
         &beauty,
         &[
-            "if !(depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON) { return scatter_colour; }",
+            "if !(depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON) { return open_transmission(to_view); }",
             "let depth_debug = camera_depth_debug_from_path(in, normal, depth_path);",
             "let use_refraction = depth_debug.refracted_sample_valid; let water_path = select(depth_debug.path_length, depth_debug.refracted_path_length, use_refraction,);",
-            "let extinction = beauty_extinction(medium.water_depth);",
+            "let extinction = invocation_extinction();",
             "let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));",
-            "if !(minimum_extinction * water_path < TRANSMISSION_OPAQUE_OPTICAL_DEPTH) { return scatter_colour; }",
+            "let opacity = column_opacity(water_path);",
+            "if !(minimum_extinction * water_path < TRANSMISSION_OPAQUE_OPTICAL_DEPTH) { let body = surface_medium_radiance(vec3(0.0), to_view, water_path); return TransmissionState(body, vec4(0.0), false, opacity); }",
             "let background_uv = select(depth_debug.screen_uv, depth_debug.refracted_uv, use_refraction,);",
             "let scene_colour = opaque_background(background_uv);",
             "let lit_scene = illuminate_bed(scene_colour, in, primary, depth_debug, use_refraction, background_uv, source_slot,);",
-            "let alpha = 1.0 - exp(-extinction * water_path); return mix(lit_scene, scatter_colour, alpha);",
+            "let body = surface_medium_radiance(lit_scene, to_view, water_path);",
+            "return TransmissionState(body, vec4(0.0), false, opacity);",
         ],
     );
     assert_eq!(beauty.matches("camera_depth_debug_from_path(").count(), 1);
@@ -236,25 +239,24 @@ fn wgsl_transmission_routes_modes_before_sampling_and_reuses_foam_depth() {
         &resolve,
         &[
             "let is_diagnostic = mode >= DEBUG_MODE_WATER_PATH && mode <= DEBUG_MODE_SEA_FLOOR;",
-            "if mode != DEBUG_MODE_BEAUTY && !is_diagnostic { return TransmissionState(scatter_colour, vec4(0.0), false); }",
+            "if mode != DEBUG_MODE_BEAUTY && !is_diagnostic { return open_transmission(to_view); }",
             "var shared_depth_path = foam.depth_path; if !foam.has_depth_path { shared_depth_path = camera_depth_path(in); }",
-            "if mode == DEBUG_MODE_BEAUTY { let body = beauty_transmission(in, normal, scatter_colour, medium, primary, shared_depth_path, source_slot,); return TransmissionState(body, vec4(0.0), false); }",
+            "if mode == DEBUG_MODE_BEAUTY { return beauty_transmission(in, normal, to_view, primary, shared_depth_path, source_slot,); }",
             "let depth_debug = camera_depth_debug_from_path(in, normal, shared_depth_path);",
             "if mode == DEBUG_MODE_WATER_PATH {",
-            "return TransmissionState(body, vec4(vec3(path), 1.0), true);",
+            "return TransmissionState(body, vec4(vec3(path), 1.0), true, vec3(1.0));",
             "if mode == DEBUG_MODE_REFRACTION_VALIDITY {",
-            "return TransmissionState(body, output, true);",
+            "return TransmissionState(body, output, true, vec3(1.0));",
             "let refraction_enabled = mode == DEBUG_MODE_TRANSMISSION || mode == DEBUG_MODE_BEER_LAMBERT || mode == DEBUG_MODE_SEA_FLOOR;",
             "let use_refraction = refraction_enabled && depth_debug.refracted_sample_valid;",
             "let background_uv = select(depth_debug.screen_uv, depth_debug.refracted_uv, use_refraction,);",
             "let scene_colour = opaque_background(background_uv);",
-            "if mode == DEBUG_MODE_TRANSMISSION || mode == DEBUG_MODE_UNREFRACTED { return TransmissionState(body, vec4(scene_colour, 1.0), true); }",
+            "if mode == DEBUG_MODE_TRANSMISSION || mode == DEBUG_MODE_UNREFRACTED { return TransmissionState(body, vec4(scene_colour, 1.0), true, vec3(1.0)); }",
             "let lit_scene = illuminate_bed(scene_colour, in, primary, depth_debug, use_refraction, background_uv, source_slot,);",
             "let water_path = select(depth_debug.path_length, depth_debug.refracted_path_length, use_refraction,);",
-            "let alpha = 1.0 - exp(-invocation_extinction() * water_path);",
-            "body = mix(lit_scene, scatter_colour, alpha);",
-            "if mode == DEBUG_MODE_BEER_LAMBERT { return TransmissionState(body, vec4(body, 1.0), true); }",
-            "return TransmissionState(body, vec4(0.0), false);",
+            "body = surface_medium_radiance(lit_scene, to_view, water_path);",
+            "if mode == DEBUG_MODE_BEER_LAMBERT { return TransmissionState(body, vec4(body, 1.0), true, vec3(1.0)); }",
+            "return TransmissionState(body, vec4(0.0), false, column_opacity(water_path));",
         ],
     );
     assert_eq!(resolve.matches("camera_depth_path(").count(), 1);

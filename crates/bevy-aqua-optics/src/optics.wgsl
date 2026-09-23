@@ -8,10 +8,13 @@
     mesh_view_bindings::{globals, lights, view},
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
-#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, field_params, sample_field_level, invocation_extinction, invocation_scatter_scale, invocation_underwater_scatter_scale, invocation_scatter_tint, invocation_scattering_asymmetry, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, uses_filtered_spectral_surface, get_spectral_filtered_variance, surface}
+#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, field_params, sample_field_level, invocation_extinction, invocation_scatter_scale, invocation_scatter_tint, invocation_scattering_asymmetry, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, uses_filtered_spectral_surface, get_spectral_filtered_variance, surface}
 #import aqua::waves::displace::{CAPILLARY_RESOLVED_ENERGY, WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, detail_normal_sample}
 #import aqua::foam::shade::{sample_foam_density}
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
+#import aqua::medium::{PATH_LENGTH_MAX, water_leaving_radiance}
+#import aqua::screen::{camera_view_position, opaque_background}
+#import aqua::ssr::{SSR_NO_FLOOR, SsrRay, screen_space_reflection}
 #import aqua::light::incident::{GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, safe_normalize, smith_masking_shadowing, strongest_incident_directional_light}
 #import aqua::light::environment::{sample_diffuse_environment, sample_environment}
 #import bevy_aqua_core::material::{CameraDepthDebug, CameraDepthPath, FoamState, MediumState, NearSurface, PrimaryLightState, SurfaceVertexOutput, TransmissionState}
@@ -93,19 +96,45 @@ fn unresolved_wave_roughness(
     return min(sqrt(max(slope_variance, 0.0)), surface.reflection.w);
 }
 
+// Bed depths in metres over which near transmission hands over to the far
+// tier. Below SHALLOW_WATER_DEPTH the bed is always shaded through the water;
+// at DEEP_WATER_DEPTH (Crest's shallow-colour depth) the far tier may take
+// over fully. Raising DEEP_WATER_DEPTH keeps costly near shading further out.
+const SHALLOW_WATER_DEPTH: f32 = 0.35;
+const DEEP_WATER_DEPTH: f32 = 7.0;
+
 fn deep_water_weight(water_depth: f32) -> f32 {
-    return smoothstep(0.35, surface.shallow_color.a, water_depth);
+    return smoothstep(SHALLOW_WATER_DEPTH, DEEP_WATER_DEPTH, water_depth);
 }
 
-fn depth_aware_body_albedo(
-    water_depth: f32,
-    deep_body_albedo: vec3<f32>,
-) -> vec3<f32> {
-    return mix(
-        surface.shallow_color.rgb,
-        deep_body_albedo,
-        deep_water_weight(water_depth),
+fn surface_medium_radiance(scene: vec3<f32>, to_view: vec3<f32>, t_end: f32) -> vec3<f32> {
+    return water_leaving_radiance(
+        scene,
+        to_view,
+        t_end,
+        invocation_extinction(),
+        invocation_scatter_scale(),
+        invocation_scatter_tint(),
+        invocation_scattering_asymmetry(),
     );
+}
+
+// Replaces the environment/planar lobe with an opaque-scene hit when SSR
+// finds one. Hits below the mean water level are rejected: they are
+// submerged receivers seen through the surface, which this lobe cannot
+// attenuate. The far tier deliberately skips this depth march.
+fn topside_screen_space_reflection(
+    reflected: vec3<f32>,
+    origin: vec3<f32>,
+    direction: vec3<f32>,
+    roughness: f32,
+    surface_level: f32,
+) -> vec3<f32> {
+    let hit = screen_space_reflection(SsrRay(origin, direction, vec3(0.0), surface_level), roughness);
+    if hit.weight <= 0.0 {
+        return reflected;
+    }
+    return mix(reflected, opaque_background(hit.uv), hit.weight);
 }
 
 fn far_field_water(
@@ -117,20 +146,10 @@ fn far_field_water(
 ) -> vec3<f32> {
     // Reuse the accepted candidate-tier surface, including safe slope reconstruction.
     let lighting_normal = near.lighting_normal;
-    let view_vertical = abs(to_view.y);
-    let deep_body_albedo = mix(
-        surface.grazing_color.rgb,
-        surface.deep_color.rgb,
-        view_vertical,
-    );
-    // Camera distance must not turn a shallow lake into deep ocean. Keep the
-    // near path's bed-depth color classification while omitting transmission.
-    let body_albedo = depth_aware_body_albedo(water_depth, deep_body_albedo);
+    let t_end = min(PATH_LENGTH_MAX, water_depth / max(abs(to_view.y), 0.02));
+    var body = surface_medium_radiance(vec3(0.0), to_view, t_end);
     let diffuse_irradiance = sample_diffuse_environment(lighting_normal);
-    // Match the near lane: the per-body scale applies to volume scatter,
-    // not the Godot substrate diffuse term or surface reflections.
-    let scatter_scale = invocation_scatter_scale();
-    var body = diffuse_irradiance * (body_albedo * scatter_scale + GODOT_WATER_ALBEDO);
+    body += diffuse_irradiance * GODOT_WATER_ALBEDO;
 
     let perceptual_roughness = unresolved_wave_roughness(
         in.undisplaced_xz,
@@ -173,9 +192,11 @@ fn far_field_water(
                 0.5 - 0.5 * dot(light_direction, lighting_normal),
                 3.0,
             );
+        // Far water is opaque, so its column opacity is one; only the
+        // particle scatter scale applies, as on the near path.
         body += (sss_height + sss_near)
             * GODOT_SSS_MODIFIER / (1.0 + sss_light_mask)
-            * light_radiance * GODOT_WATER_ALBEDO * scatter_scale;
+            * light_radiance * GODOT_WATER_ALBEDO * invocation_scatter_scale();
         let sun_roughness = min(sqrt(
             invocation_sun_roughness() * invocation_sun_roughness()
                 + perceptual_roughness * perceptual_roughness,
@@ -203,12 +224,6 @@ fn far_field_water(
         1.0,
     );
     return mix(body, reflected_radiance, reflection_weight);
-}
-
-fn camera_view_position(uv: vec2<f32>, raw_depth: f32) -> vec3<f32> {
-    let ndc = vec3(uv * vec2(2.0, -2.0) + vec2(-1.0, 1.0), raw_depth);
-    let position = view.view_from_clip * vec4(ndc, 1.0);
-    return position.xyz / max(position.w, LUMINANCE_EPSILON);
 }
 
 fn empty_camera_depth_path() -> CameraDepthPath {
@@ -294,25 +309,6 @@ fn camera_depth_debug_from_path(
     return result;
 }
 
-// Transmission samples the opaque buffer at full resolution. Distortion
-// comes only from the displacement normal; no roughness mip or blur is used.
-fn opaque_background(subview_uv: vec2<f32>) -> vec3<f32> {
-    let dimensions = vec2<f32>(textureDimensions(view_bindings::view_transmission_texture));
-    // Keep the linear footprint inside this viewport, not just the backing texture.
-    let color_pixel = clamp(
-        subview_uv * view.viewport.zw + view.viewport.xy,
-        view.viewport.xy + vec2(0.5),
-        view.viewport.xy + view.viewport.zw - vec2(0.5),
-    );
-    let full_uv = color_pixel / dimensions;
-    return textureSampleLevel(
-        view_bindings::view_transmission_texture,
-        view_bindings::view_transmission_sampler,
-        full_uv,
-        0.0,
-    ).rgb;
-}
-
 fn resolve_near_surface(
     in: SurfaceVertexOutput,
     surface_lod: u32,
@@ -371,19 +367,9 @@ fn sample_water_medium(
     in: SurfaceVertexOutput,
     surface_lod: u32,
     lighting_normal: vec3<f32>,
-    to_view: vec3<f32>,
     mode: u32,
 ) -> MediumState {
     let water_depth = blended_water_depth(in.undisplaced_xz);
-    let view_vertical = abs(to_view.y);
-    let deep_body_albedo = mix(
-        surface.grazing_color.rgb,
-        surface.deep_color.rgb,
-        view_vertical,
-    );
-    // Metric SeaFloorDepth shifts only the volume-scatter endpoint. Reflection,
-    // foam, and camera-depth transmission remain on their existing lanes.
-    let body_albedo = depth_aware_body_albedo(water_depth, deep_body_albedo);
     var diffuse_irradiance = vec3(0.0);
     if mode >= DEBUG_MODE_BEAUTY {
         diffuse_irradiance = sample_diffuse_environment(lighting_normal);
@@ -397,7 +383,6 @@ fn sample_water_medium(
         );
     }
     return MediumState(
-        body_albedo,
         diffuse_irradiance,
         water_depth,
         foam_density,
@@ -514,10 +499,14 @@ fn illuminate_bed(
     );
 }
 
-// Beauty-only attenuation. Diagnostics intentionally retain authored extinction.
-fn beauty_extinction(water_depth: f32) -> vec3<f32> {
-    let scale = mix(vec3(0.52, 0.42, 0.62), vec3(1.0), deep_water_weight(water_depth));
-    return invocation_extinction() * scale;
+fn column_opacity(water_path: f32) -> vec3<f32> {
+    return 1.0 - exp(-invocation_extinction() * water_path);
+}
+
+// No background: the view ray stays in the water until the medium saturates.
+fn open_transmission(to_view: vec3<f32>) -> TransmissionState {
+    let body = surface_medium_radiance(vec3(0.0), to_view, PATH_LENGTH_MAX);
+    return TransmissionState(body, vec4(0.0), false, vec3(1.0));
 }
 
 // Beauty skips color sampling when there is no usable background or the accepted
@@ -525,14 +514,13 @@ fn beauty_extinction(water_depth: f32) -> vec3<f32> {
 fn beauty_transmission(
     in: SurfaceVertexOutput,
     normal: vec3<f32>,
-    scatter_colour: vec3<f32>,
-    medium: MediumState,
+    to_view: vec3<f32>,
     primary: PrimaryLightState,
     depth_path: CameraDepthPath,
     source_slot: u32,
-) -> vec3<f32> {
+) -> TransmissionState {
     if !(depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON) {
-        return scatter_colour;
+        return open_transmission(to_view);
     }
 
     let depth_debug = camera_depth_debug_from_path(in, normal, depth_path);
@@ -542,12 +530,13 @@ fn beauty_transmission(
         depth_debug.refracted_path_length,
         use_refraction,
     );
-    // Reduce extinction in the first few metres so the seabed stays visible.
-    let extinction = beauty_extinction(medium.water_depth);
+    let extinction = invocation_extinction();
     let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));
     // Refraction can reveal a shallower bed: test the accepted path, not the original.
+    let opacity = column_opacity(water_path);
     if !(minimum_extinction * water_path < TRANSMISSION_OPAQUE_OPTICAL_DEPTH) {
-        return scatter_colour;
+        let body = surface_medium_radiance(vec3(0.0), to_view, water_path);
+        return TransmissionState(body, vec4(0.0), false, opacity);
     }
 
     let background_uv = select(
@@ -560,8 +549,8 @@ fn beauty_transmission(
         scene_colour, in, primary, depth_debug, use_refraction,
         background_uv, source_slot,
     );
-    let alpha = 1.0 - exp(-extinction * water_path);
-    return mix(lit_scene, scatter_colour, alpha);
+    let body = surface_medium_radiance(lit_scene, to_view, water_path);
+    return TransmissionState(body, vec4(0.0), false, opacity);
 }
 
 // Admission uses the same path selection and attenuation as near beauty.
@@ -581,8 +570,7 @@ fn far_path_opaque(
         accepted.refracted_path_length,
         accepted.refracted_sample_valid,
     );
-    let depth = blended_water_depth(in.undisplaced_xz);
-    let extinction = beauty_extinction(depth);
+    let extinction = invocation_extinction();
     let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));
     return minimum_extinction * water_path >= TRANSMISSION_OPAQUE_OPTICAL_DEPTH;
 }
@@ -590,8 +578,7 @@ fn far_path_opaque(
 fn resolve_transmission(
     in: SurfaceVertexOutput,
     normal: vec3<f32>,
-    scatter_colour: vec3<f32>,
-    medium: MediumState,
+    to_view: vec3<f32>,
     foam: FoamState,
     primary: PrimaryLightState,
     mode: u32,
@@ -599,7 +586,7 @@ fn resolve_transmission(
 ) -> TransmissionState {
     let is_diagnostic = mode >= DEBUG_MODE_WATER_PATH && mode <= DEBUG_MODE_SEA_FLOOR;
     if mode != DEBUG_MODE_BEAUTY && !is_diagnostic {
-        return TransmissionState(scatter_colour, vec4(0.0), false);
+        return open_transmission(to_view);
     }
 
     // Foam may already have fetched this pixel's depth. Reuse it for either path.
@@ -608,18 +595,17 @@ fn resolve_transmission(
         shared_depth_path = camera_depth_path(in);
     }
     if mode == DEBUG_MODE_BEAUTY {
-        let body = beauty_transmission(
-            in, normal, scatter_colour, medium, primary, shared_depth_path, source_slot,
+        return beauty_transmission(
+            in, normal, to_view, primary, shared_depth_path, source_slot,
         );
-        return TransmissionState(body, vec4(0.0), false);
     }
 
     // Diagnostic modes keep the full sampling path, even for opaque water.
-    var body = scatter_colour;
+    var body = surface_medium_radiance(vec3(0.0), to_view, PATH_LENGTH_MAX);
     let depth_debug = camera_depth_debug_from_path(in, normal, shared_depth_path);
     if mode == DEBUG_MODE_WATER_PATH {
         let path = clamp(depth_debug.path_length / surface.debug.z, 0.0, 1.0);
-        return TransmissionState(body, vec4(vec3(path), 1.0), true);
+        return TransmissionState(body, vec4(vec3(path), 1.0), true, vec3(1.0));
     }
     if mode == DEBUG_MODE_REFRACTION_VALIDITY {
         let output = select(
@@ -627,7 +613,7 @@ fn resolve_transmission(
             vec4(0.0, 1.0, 0.0, 1.0),
             depth_debug.refracted_sample_valid,
         );
-        return TransmissionState(body, output, true);
+        return TransmissionState(body, output, true, vec3(1.0));
     }
     let refraction_enabled = mode == DEBUG_MODE_TRANSMISSION
         || mode == DEBUG_MODE_BEER_LAMBERT
@@ -641,11 +627,9 @@ fn resolve_transmission(
     );
     let scene_colour = opaque_background(background_uv);
     if mode == DEBUG_MODE_TRANSMISSION || mode == DEBUG_MODE_UNREFRACTED {
-        return TransmissionState(body, vec4(scene_colour, 1.0), true);
+        return TransmissionState(body, vec4(scene_colour, 1.0), true, vec3(1.0));
     }
 
-    // Crest `OceanEmission.hlsl:254-266`: per-channel Beer-Lambert fog.
-    // The colour ramp emerges from extinction; there is no authored ramp.
     let lit_scene = illuminate_bed(
         scene_colour, in, primary, depth_debug, use_refraction,
         background_uv, source_slot,
@@ -655,20 +639,74 @@ fn resolve_transmission(
         depth_debug.refracted_path_length,
         use_refraction,
     );
-    let alpha = 1.0 - exp(-invocation_extinction() * water_path);
-    body = mix(lit_scene, scatter_colour, alpha);
+    body = surface_medium_radiance(lit_scene, to_view, water_path);
     if mode == DEBUG_MODE_BEER_LAMBERT {
-        return TransmissionState(body, vec4(body, 1.0), true);
+        return TransmissionState(body, vec4(body, 1.0), true, vec3(1.0));
     }
-    return TransmissionState(body, vec4(0.0), false);
+    return TransmissionState(body, vec4(0.0), false, column_opacity(water_path));
 }
 
 
 #ifdef UNDERWATER
-#import aqua::medium::{N_WATER, PATH_LENGTH_MAX, fresnel_water_to_air, medium_radiance_oriented}
+#import aqua::medium::{N_WATER, fresnel_water_to_air, medium_radiance_oriented}
 
-// Water-to-air interface. Reflected rays use the bounded homogeneous medium;
-// screen-space ray marching remains omitted until it has validated quality controls.
+// The Snell window is almost all transmission. Underside SSR marches only
+// once the reflected share is visible. For n = 1.333, Fresnel reaches 0.15 at
+// 45.3° incidence and 0.35 at 47.6°, just inside the 48.6° critical angle.
+// Lowering the start spends the march on pixels whose reflection is faint.
+const UNDERSIDE_SSR_FRESNEL_START: f32 = 0.15;
+const UNDERSIDE_SSR_FRESNEL_FULL: f32 = 0.35;
+
+// Reflected water-side radiance: the open homogeneous medium, or a
+// screen-space hit attenuated along the bounce. Hits on the air side of the
+// facet are rejected.
+fn underside_reflection(
+    origin: vec3<f32>,
+    reflected_direction: vec3<f32>,
+    facet_up: vec3<f32>,
+    roughness: f32,
+    fresnel: f32,
+) -> vec3<f32> {
+    // The paired reflection normal keeps this ray in the local water halfspace
+    // even when its world Y component points upward.
+    let open = medium_radiance_oriented(
+        vec3(0.0),
+        reflected_direction,
+        PATH_LENGTH_MAX,
+        0.0,
+        invocation_extinction(),
+        invocation_scatter_scale(),
+        invocation_scatter_tint(),
+        invocation_scattering_asymmetry(),
+        facet_up,
+    );
+    let fresnel_gate = smoothstep(UNDERSIDE_SSR_FRESNEL_START, UNDERSIDE_SSR_FRESNEL_FULL, fresnel);
+    if fresnel_gate <= 0.0 {
+        return open;
+    }
+    let hit = screen_space_reflection(
+        SsrRay(origin, reflected_direction, facet_up, SSR_NO_FLOOR),
+        roughness,
+    );
+    if hit.weight <= 0.0 {
+        return open;
+    }
+    let bounced = medium_radiance_oriented(
+        opaque_background(hit.uv),
+        reflected_direction,
+        hit.distance,
+        0.0,
+        invocation_extinction(),
+        invocation_scatter_scale(),
+        invocation_scatter_tint(),
+        invocation_scattering_asymmetry(),
+        facet_up,
+    );
+    return mix(open, bounced, hit.weight * fresnel_gate);
+}
+
+// Water-to-air interface. The reflected lobe stays in the water medium; see
+// `underside_reflection`.
 fn shade_underside(
     in: SurfaceVertexOutput,
     surface_lod: u32,
@@ -701,19 +739,12 @@ fn shade_underside(
         near.filtered_capillary_variance,
     );
     // A reflected water-side ray cannot sample the air environment probe.
-    // Evaluate the homogeneous open-path medium in the local facet frame.
-    // The paired reflection normal keeps this ray in the local water halfspace
-    // even when its world Y component points upward.
-    let reflected = medium_radiance_oriented(
-        vec3(0.0),
+    let reflected = underside_reflection(
+        in.world_position.xyz,
         reflected_direction,
-        PATH_LENGTH_MAX,
-        0.0,
-        invocation_extinction(),
-        invocation_underwater_scatter_scale(),
-        invocation_scatter_tint(),
-        invocation_scattering_asymmetry(),
         facet_up,
+        roughness,
+        fresnel,
     );
     // WGSL refract returns zero at total internal reflection. Exact Fresnel
     // independently reaches one there, so this branch avoids invalid lookups.

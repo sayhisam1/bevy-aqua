@@ -82,12 +82,13 @@ fn underside_uses_current_near_surface_variance_contract() {
 #[test]
 fn underside_tir_uses_bounded_water_side_medium_not_air_probe() {
     let source = include_str!("optics.wgsl");
-    let underside = source.split("fn shade_underside(").nth(1).unwrap();
+    // `underside_reflection` precedes and is called by `shade_underside`.
+    let underside = source.split("fn underside_reflection(").nth(1).unwrap();
     assert!(!underside.contains("bounce_path"));
-    assert!(underside.contains("let reflected = medium_radiance_oriented("));
+    assert!(underside.contains("let open = medium_radiance_oriented("));
     assert!(underside.contains("PATH_LENGTH_MAX"));
     assert!(underside.contains("-water_normal"));
-    assert!(underside.contains("invocation_underwater_scatter_scale()"));
+    assert!(underside.contains("invocation_scatter_scale()"));
     assert!(underside.contains("invocation_scatter_tint()"));
     assert!(underside.contains("invocation_scattering_asymmetry()"));
     let before_tir = underside
@@ -245,7 +246,7 @@ fn random_grazing_microdetail_is_bounded_to_water_halfspace() {
 #[test]
 fn underside_shader_applies_visibility_guard_before_interface_math() {
     let source = include_str!("optics.wgsl");
-    let underside = source.split("fn shade_underside(").nth(1).unwrap();
+    let underside = source.split("fn underside_reflection(").nth(1).unwrap();
     assert!(underside.contains("let corrected_up = candidate_up"));
     assert!(underside.contains("max(1e-3 - visibility, 0.0)"));
     assert!(underside.contains("let facet_up = safe_normalize(corrected_up, incident)"));
