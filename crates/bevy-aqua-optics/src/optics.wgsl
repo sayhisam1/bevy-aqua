@@ -13,6 +13,8 @@
 #import aqua::foam::shade::{sample_foam_density}
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
 #import aqua::medium::{PATH_LENGTH_MAX, water_leaving_radiance}
+#import aqua::screen::{camera_view_position, opaque_background}
+#import aqua::ssr::{SSR_NO_FLOOR, SsrRay, screen_space_reflection}
 #import aqua::light::incident::{GODOT_SSS_MODIFIER, GODOT_WATER_ALBEDO, LUMINANCE_WEIGHTS, filtered_primary_light_color, ggx_distribution, safe_normalize, smith_masking_shadowing, strongest_incident_directional_light}
 #import aqua::light::environment::{sample_diffuse_environment, sample_environment}
 #import bevy_aqua_core::material::{CameraDepthDebug, CameraDepthPath, FoamState, MediumState, NearSurface, PrimaryLightState, SurfaceVertexOutput, TransmissionState}
@@ -117,171 +119,22 @@ fn surface_medium_radiance(scene: vec3<f32>, to_view: vec3<f32>, t_end: f32) -> 
     );
 }
 
-fn camera_view_position(uv: vec2<f32>, raw_depth: f32) -> vec3<f32> {
-    let ndc = vec3(uv * vec2(2.0, -2.0) + vec2(-1.0, 1.0), raw_depth);
-    let position = view.view_from_clip * vec4(ndc, 1.0);
-    return position.xyz / max(position.w, LUMINANCE_EPSILON);
-}
-
-// Transmission samples the opaque buffer at full resolution. Distortion
-// comes only from the displacement normal; no roughness mip or blur is used.
-fn opaque_background(subview_uv: vec2<f32>) -> vec3<f32> {
-    let dimensions = vec2<f32>(textureDimensions(view_bindings::view_transmission_texture));
-    // Keep the linear footprint inside this viewport, not just the backing texture.
-    let color_pixel = clamp(
-        subview_uv * view.viewport.zw + view.viewport.xy,
-        view.viewport.xy + vec2(0.5),
-        view.viewport.xy + view.viewport.zw - vec2(0.5),
-    );
-    let full_uv = color_pixel / dimensions;
-    return textureSampleLevel(
-        view_bindings::view_transmission_texture,
-        view_bindings::view_transmission_sampler,
-        full_uv,
-        0.0,
-    ).rgb;
-}
-
-// Opt-in march of the opaque depth buffer along a mirrored ray.
-// Twelve quadratic steps reach 48 m, then five bisections pull the crossing
-// inside a 0.4 m eye-depth thickness. `outward` drops hits on the air side of
-// an underside facet. A zero vector keeps every hit.
-const SSR_LINEAR_STEPS: u32 = 12u;
-const SSR_BISECTION_STEPS: u32 = 5u;
-const SSR_START: f32 = 0.3;
-const SSR_MAX_DISTANCE: f32 = 48.0;
-const SSR_THICKNESS: f32 = 0.4;
-const SSR_EDGE_FADE: f32 = 0.08;
-
-struct SsrProbe {
-    valid: bool,
-    in_front: bool,
-    uv: vec2<f32>,
-    gap: f32,
-    distance: f32,
-}
-
-struct ScreenSpaceReflection {
-    color: vec3<f32>,
-    weight: f32,
-    distance: f32,
-}
-
-fn screen_space_reflection_miss() -> ScreenSpaceReflection {
-    return ScreenSpaceReflection(vec3(0.0), 0.0, PATH_LENGTH_MAX);
-}
-
-fn ssr_probe(
+// Replaces the environment/planar lobe with an opaque-scene hit when SSR
+// finds one. Hits below the mean water level are rejected: they are
+// submerged receivers seen through the surface, which this lobe cannot
+// attenuate. The far tier deliberately skips this depth march.
+fn topside_screen_space_reflection(
+    reflected: vec3<f32>,
     origin: vec3<f32>,
     direction: vec3<f32>,
-    travel: f32,
-    outward: vec3<f32>,
-) -> SsrProbe {
-    var probe: SsrProbe;
-    probe.valid = false;
-    probe.in_front = false;
-    probe.uv = vec2(0.0);
-    probe.gap = 0.0;
-    probe.distance = travel;
-    let world = origin + direction * travel;
-    let guard_halfspace = dot(outward, outward) > 0.5;
-    if guard_halfspace && dot(world - origin, outward) > 0.02 {
-        return probe;
-    }
-#ifdef DEPTH_PREPASS
-    let clip = view.clip_from_world * vec4(world, 1.0);
-    if clip.w <= LUMINANCE_EPSILON {
-        return probe;
-    }
-    let ndc = clip.xyz / clip.w;
-    let uv = vec2(ndc.x, -ndc.y) * 0.5 + 0.5;
-    if any(uv < vec2(0.0)) || any(uv > vec2(1.0)) {
-        return probe;
-    }
-    let viewport_origin = view.viewport.xy;
-    let viewport_size = view.viewport.zw;
-    let pixel = min(uv * viewport_size, viewport_size - vec2(1.0)) + viewport_origin;
-    let scene_depth = prepass_utils::prepass_depth(vec4(pixel, 0.0, 1.0), 0u);
-    probe.uv = uv;
-    probe.valid = true;
-    if scene_depth <= 0.0 {
-        probe.in_front = true;
-        probe.gap = -1.0;
-        return probe;
-    }
-    let ray_eye = -(view.view_from_world * vec4(world, 1.0)).z;
-    let scene_view = camera_view_position(uv, scene_depth);
-    let scene_eye = -scene_view.z;
-    let hit = (view.world_from_view * vec4(scene_view, 1.0)).xyz;
-    if guard_halfspace && dot(hit - origin, outward) > 0.02 {
-        probe.in_front = true;
-        probe.gap = -1.0;
-        return probe;
-    }
-    probe.gap = ray_eye - scene_eye;
-    probe.in_front = probe.gap <= 0.0;
-#endif
-    return probe;
-}
-
-fn screen_space_reflection(
-    origin: vec3<f32>,
-    direction_world: vec3<f32>,
     roughness: f32,
-    outward: vec3<f32>,
-) -> ScreenSpaceReflection {
-    if surface.far_tier.z < 0.5 {
-        return screen_space_reflection_miss();
+    surface_level: f32,
+) -> vec3<f32> {
+    let hit = screen_space_reflection(SsrRay(origin, direction, vec3(0.0), surface_level), roughness);
+    if hit.weight <= 0.0 {
+        return reflected;
     }
-    let fade_end = max(surface.reflection.w, 0.05);
-    let fade_start = fade_end * 0.35;
-    let rough = 1.0 - smoothstep(fade_start, fade_end, roughness);
-    if rough <= 0.0 {
-        return screen_space_reflection_miss();
-    }
-#ifdef DEPTH_PREPASS
-    let direction = safe_normalize(direction_world, vec3(0.0, 1.0, 0.0));
-    var prev_travel = SSR_START;
-    var prev_in_front = true;
-    for (var i = 1u; i <= SSR_LINEAR_STEPS; i++) {
-        let u = f32(i) / f32(SSR_LINEAR_STEPS);
-        let travel = SSR_START + (SSR_MAX_DISTANCE - SSR_START) * u * u;
-        let probe = ssr_probe(origin, direction, travel, outward);
-        if !probe.valid {
-            break;
-        }
-        if prev_in_front && !probe.in_front {
-            var lo = prev_travel;
-            var hi = travel;
-            for (var refine = 0u; refine < SSR_BISECTION_STEPS; refine++) {
-                let mid = 0.5 * (lo + hi);
-                let refined = ssr_probe(origin, direction, mid, outward);
-                if refined.valid && !refined.in_front {
-                    hi = mid;
-                } else {
-                    lo = mid;
-                }
-            }
-            let hit = ssr_probe(origin, direction, hi, outward);
-            if hit.valid && !hit.in_front && hit.gap > 0.0 && hit.gap < SSR_THICKNESS {
-                let inset = min(min(hit.uv.x, 1.0 - hit.uv.x), min(hit.uv.y, 1.0 - hit.uv.y));
-                let edge = smoothstep(0.0, SSR_EDGE_FADE, inset);
-                let weight = rough * edge;
-                if weight > 0.0 {
-                    return ScreenSpaceReflection(
-                        opaque_background(hit.uv),
-                        weight,
-                        min(hi, PATH_LENGTH_MAX),
-                    );
-                }
-            }
-            break;
-        }
-        prev_travel = travel;
-        prev_in_front = probe.in_front;
-    }
-#endif
-    return screen_space_reflection_miss();
+    return mix(reflected, opaque_background(hit.uv), hit.weight);
 }
 
 fn far_field_water(
@@ -314,13 +167,6 @@ fn far_field_water(
     );
     let planar = sample_planar_reflection(in.world_position.xyz, surface_level, lighting_normal, perceptual_roughness);
     reflected_radiance = mix(reflected_radiance, planar.color, planar.weight);
-    let ssr = screen_space_reflection(
-        in.world_position.xyz,
-        reflection,
-        perceptual_roughness,
-        vec3(0.0),
-    );
-    reflected_radiance = mix(reflected_radiance, ssr.color, ssr.weight);
     if lights.n_directional_lights > 0u {
         let light = lights.directional_lights[0u];
         let light_direction = safe_normalize(
@@ -791,9 +637,63 @@ fn resolve_transmission(
 #ifdef UNDERWATER
 #import aqua::medium::{N_WATER, fresnel_water_to_air, medium_radiance_oriented}
 
-// Water-to-air interface. Reflected rays use the bounded homogeneous medium.
-// When screen-space reflections are enabled, a depth-buffer hit replaces that
-// open path and is attenuated along the bounce. A miss stays the medium.
+// The Snell window is almost all transmission. Underside SSR marches only
+// once the reflected share is visible. For n = 1.333, Fresnel reaches 0.15 at
+// 45.3° incidence and 0.35 at 47.6°, just inside the 48.6° critical angle.
+// Lowering the start spends the march on pixels whose reflection is faint.
+const UNDERSIDE_SSR_FRESNEL_START: f32 = 0.15;
+const UNDERSIDE_SSR_FRESNEL_FULL: f32 = 0.35;
+
+// Reflected water-side radiance: the open homogeneous medium, or a
+// screen-space hit attenuated along the bounce. Hits on the air side of the
+// facet are rejected.
+fn underside_reflection(
+    origin: vec3<f32>,
+    reflected_direction: vec3<f32>,
+    facet_up: vec3<f32>,
+    roughness: f32,
+    fresnel: f32,
+) -> vec3<f32> {
+    // The paired reflection normal keeps this ray in the local water halfspace
+    // even when its world Y component points upward.
+    let open = medium_radiance_oriented(
+        vec3(0.0),
+        reflected_direction,
+        PATH_LENGTH_MAX,
+        0.0,
+        invocation_extinction(),
+        invocation_scatter_scale(),
+        invocation_scatter_tint(),
+        invocation_scattering_asymmetry(),
+        facet_up,
+    );
+    let fresnel_gate = smoothstep(UNDERSIDE_SSR_FRESNEL_START, UNDERSIDE_SSR_FRESNEL_FULL, fresnel);
+    if fresnel_gate <= 0.0 {
+        return open;
+    }
+    let hit = screen_space_reflection(
+        SsrRay(origin, reflected_direction, facet_up, SSR_NO_FLOOR),
+        roughness,
+    );
+    if hit.weight <= 0.0 {
+        return open;
+    }
+    let bounced = medium_radiance_oriented(
+        opaque_background(hit.uv),
+        reflected_direction,
+        hit.distance,
+        0.0,
+        invocation_extinction(),
+        invocation_scatter_scale(),
+        invocation_scatter_tint(),
+        invocation_scattering_asymmetry(),
+        facet_up,
+    );
+    return mix(open, bounced, hit.weight * fresnel_gate);
+}
+
+// Water-to-air interface. The reflected lobe stays in the water medium; see
+// `underside_reflection`.
 fn shade_underside(
     in: SurfaceVertexOutput,
     surface_lod: u32,
@@ -826,50 +726,17 @@ fn shade_underside(
         near.filtered_capillary_variance,
     );
     // A reflected water-side ray cannot sample the air environment probe.
-    // Evaluate the homogeneous open-path medium in the local facet frame.
-    // The paired reflection normal keeps this ray in the local water halfspace
-    // even when its world Y component points upward.
-    let reflected = medium_radiance_oriented(
-        vec3(0.0),
+    let reflected = underside_reflection(
+        in.world_position.xyz,
         reflected_direction,
-        PATH_LENGTH_MAX,
-        0.0,
-        invocation_extinction(),
-        invocation_scatter_scale(),
-        invocation_scatter_tint(),
-        invocation_scattering_asymmetry(),
         facet_up,
+        roughness,
+        fresnel,
     );
-    var reflected_lobe = reflected;
-    // The Snell window is almost all transmission. March only as the reflected
-    // share becomes visible, and fade the hit in across that range.
-    let fresnel_gate = smoothstep(0.15, 0.35, fresnel);
-    if fresnel_gate > 0.0 {
-        let ssr = screen_space_reflection(
-            in.world_position.xyz,
-            reflected_direction,
-            roughness,
-            facet_up,
-        );
-        if ssr.weight > 0.0 {
-            let hit_reflected = medium_radiance_oriented(
-                ssr.color,
-                reflected_direction,
-                ssr.distance,
-                0.0,
-                invocation_extinction(),
-                invocation_scatter_scale(),
-                invocation_scatter_tint(),
-                invocation_scattering_asymmetry(),
-                facet_up,
-            );
-            reflected_lobe = mix(reflected, hit_reflected, ssr.weight * fresnel_gate);
-        }
-    }
     // WGSL refract returns zero at total internal reflection. Exact Fresnel
     // independently reaches one there, so this branch avoids invalid lookups.
     if dot(transmitted_direction, transmitted_direction) < LUMINANCE_EPSILON {
-        return vec4(reflected_lobe, 1.0);
+        return vec4(reflected, 1.0);
     }
 
     var window = sample_environment(
@@ -907,6 +774,6 @@ fn shade_underside(
     // Radiance invariant across the interface: L_air = L_water / n²,
     // therefore the sampled air radiance is n² larger in the water domain.
     window *= N_WATER * N_WATER;
-    return vec4(mix(window, reflected_lobe, fresnel), 1.0);
+    return vec4(mix(window, reflected, fresnel), 1.0);
 }
 #endif

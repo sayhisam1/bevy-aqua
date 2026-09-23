@@ -16,8 +16,9 @@ fn compact(source: &str) -> String {
 }
 
 fn assert_shader_contains(fragment: &str) {
+    let sources = compact(OPTICS) + &compact(include_str!("screen.wgsl"));
     assert!(
-        compact(OPTICS).contains(&compact(fragment)),
+        sources.contains(&compact(fragment)),
         "WGSL contract changed: {fragment}"
     );
 }

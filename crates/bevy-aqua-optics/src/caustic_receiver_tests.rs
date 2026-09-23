@@ -2,10 +2,13 @@
 //! CPU references do not execute WGSL. The frozen-offset 0.05 m / 1% view-Z
 //! heuristic can reject smooth slopes and accept small inter-surface jumps.
 const OPTICS: &str = include_str!("optics.wgsl");
+const SCREEN: &str = include_str!("screen.wgsl");
 
 fn function(name: &str) -> &str {
-    let start = OPTICS.find(&format!("fn {name}(")).unwrap();
-    let tail = &OPTICS[start..];
+    let marker = format!("fn {name}(");
+    let source = if SCREEN.contains(&marker) { SCREEN } else { OPTICS };
+    let start = source.find(&marker).unwrap();
+    let tail = &source[start..];
     &tail[..tail.find("\n}\n").unwrap() + 3]
 }
 fn ordered(source: &str, parts: &[&str]) {

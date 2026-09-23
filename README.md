@@ -118,9 +118,10 @@ and reflections while omitting depth, foam, and sampled subsurface detail.
 `reflections` selects the default planar mirror views or the cubemap-only path. Both use the same dielectric Fresnel response. Mark terrain or a
 scene root with `ReflectedInWater` to include it and its descendants in planar
 views. `screen_space_reflections` is off by default. When enabled, a hit along
-the reflected ray replaces that cubemap or planar sample. The camera needs a
-depth prepass. With the `underwater` feature the same switch marches the
-underside reflected ray.
+the reflected ray replaces that cubemap or planar sample on near water; the far
+tier keeps its depth-free reflections. Submerged geometry is never reflected.
+The camera needs a depth prepass. With the `underwater` feature the same
+switch marches the underside reflected ray.
 
 **Bevy 0.19.1 limitation:** planar mirrors can light double-sided
 `StandardMaterial` geometry with the wrong normal polarity. The mirrored camera
