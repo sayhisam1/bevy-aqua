@@ -1,37 +1,11 @@
 //! CPU limit checks and source contracts, not WGSL execution.
 //! Runtime shader compilation and reflection-source captures remain required.
 
+use crate::test_support::{compact_wgsl as compact, compact_wgsl_function as function};
+
 const COMMON: &str = include_str!("../../bevy-aqua-core/src/cascade/common.wgsl");
 const MATERIAL: &str = include_str!("../../bevy-aqua-core/src/cascade/material.wgsl");
 const OPTICS: &str = include_str!("optics.wgsl");
-
-fn compact(source: &str) -> String {
-    source
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or_default())
-        .flat_map(str::chars)
-        .filter(|c| !c.is_whitespace())
-        .collect()
-}
-
-fn function(source: &str, name: &str) -> String {
-    let marker = format!("fn {name}(");
-    let start = source.find(&marker).expect("WGSL function missing");
-    let mut depth = 0;
-    for (offset, ch) in source[start..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return compact(&source[start..=start + offset]);
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("WGSL function body missing");
-}
 
 fn assert_contains(source: &str, fragment: &str) {
     assert!(

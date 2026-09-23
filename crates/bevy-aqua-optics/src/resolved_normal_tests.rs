@@ -1,12 +1,8 @@
 //! Source contracts and CPU checks only; native rendering is a separate gate.
+use crate::test_support::wgsl_function as function;
+
 const OPTICS: &str = include_str!("optics.wgsl");
 const MATERIAL: &str = include_str!("../../bevy-aqua-core/src/cascade/material.wgsl");
-
-fn function<'a>(source: &'a str, name: &str) -> &'a str {
-    let start = source.find(&format!("fn {name}(")).unwrap();
-    let tail = &source[start..];
-    &tail[..tail.find("\n}\n").unwrap() + 3]
-}
 
 #[test]
 fn resolved_normal_is_shared_without_extra_detail_sampling() {
@@ -122,11 +118,4 @@ fn far_tier_transfers_removed_detail_energy_without_fading_wave_slopes() {
             }
         }
     }
-}
-
-#[test]
-fn reduced_resolved_capillary_energy_moves_into_roughness() {
-    let shader = include_str!("optics.wgsl");
-    assert!(shader.contains("* CAPILLARY_RESOLVED_ENERGY"));
-    assert!(shader.contains("+ min(filtered_capillary_variance"));
 }

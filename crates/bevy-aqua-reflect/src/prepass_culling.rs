@@ -152,38 +152,6 @@ mod tests {
     }
 
     #[test]
-    fn stable_mirrors_do_not_respecialize_and_both_flip_directions_dirty_once() {
-        let (mut world, mut schedule, entity, retained) = fixture(false);
-        frame(&mut world, &mut schedule);
-        assert!(inverted(&world, retained));
-        assert!(
-            world
-                .resource::<DirtySpecializations>()
-                .views
-                .contains(&retained)
-        );
-        for _ in 0..100 {
-            frame(&mut world, &mut schedule);
-            clean(&world);
-        }
-        for desired in [false, true] {
-            world
-                .get_mut::<ExtractedView>(entity)
-                .unwrap()
-                .invert_culling = desired;
-            frame(&mut world, &mut schedule);
-            assert_eq!(inverted(&world, retained), desired);
-            assert!(
-                world
-                    .resource::<DirtySpecializations>()
-                    .views
-                    .contains(&retained)
-            );
-            frame(&mut world, &mut schedule);
-            clean(&world);
-        }
-    }
-    #[test]
     fn ordinary_key_changes_and_unrelated_dirty_views_are_preserved() {
         let (mut world, mut schedule, entity, retained) = fixture(false);
         frame(&mut world, &mut schedule);
@@ -249,10 +217,13 @@ mod tests {
         assert_eq!(dirty.len(), 2);
         assert!(dirty.contains(&mirror_retained));
         assert!(dirty.contains(&ordinary_retained));
+        assert!(inverted(&world, mirror_retained));
         let ordinary_key = world.resource::<ViewKeyPrepassCache>()[&ordinary_retained];
         assert!(!ordinary_key.contains(MeshPipelineKey::INVERT_CULLING));
-        frame(&mut world, &mut schedule);
-        clean(&world);
+        for _ in 0..100 {
+            frame(&mut world, &mut schedule);
+            clean(&world);
+        }
 
         for desired in [false, true] {
             world

@@ -1,6 +1,6 @@
 [package]
 name = "bevy-aqua-optics"
-description = "Depth, medium, and transmission optics for Aqua shaders."
+description = "Depth and transmission optics for Aqua shaders."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 bevy-aqua-light.workspace = true
+bevy-aqua-medium.workspace = true
 bevy = { workspace = true, features = ["bevy_asset"] }
 
 [lints]

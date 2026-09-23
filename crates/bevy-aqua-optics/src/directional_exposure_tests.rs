@@ -2,24 +2,11 @@
 //! These inspect production WGSL, not a CPU copy of its lighting arithmetic.
 //! Shader execution and visual exposure sweeps remain separate validation.
 
+use crate::test_support::{compact_wgsl as compact, compact_wgsl_function as function};
+
 const MATERIAL: &str = include_str!("../../bevy-aqua-core/src/cascade/material.wgsl");
 const INCIDENT: &str = include_str!("../../bevy-aqua-light/src/incident.wgsl");
 const OPTICS: &str = include_str!("optics.wgsl");
-
-fn compact(source: &str) -> String {
-    source
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or_default())
-        .flat_map(str::chars)
-        .filter(|c| !c.is_whitespace())
-        .collect()
-}
-
-fn function(source: &str, name: &str) -> String {
-    let marker = format!("fn {name}(");
-    let (_, tail) = source.split_once(&marker).expect("WGSL function missing");
-    compact(tail.split("\nfn ").next().unwrap())
-}
 
 fn assert_contains(source: &str, fragment: &str) {
     assert!(

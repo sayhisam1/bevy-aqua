@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/bevy-aqua-fft", "crates/bevy-aqua-sdf", "crates/bevy-aqua-geom", "crates/bevy-aqua-light", "crates/bevy-aqua-optics", "crates/bevy-aqua-core", "crates/bevy-aqua-waves", "crates/bevy-aqua-foam", "crates/bevy-aqua-shore", "crates/bevy-aqua-query", "crates/bevy-aqua-reflect", "crates/bevy-aqua-spray", "crates/bevy-aqua-motion", "crates/bevy-aqua-volume"]
+members = ["crates/bevy-aqua-fft", "crates/bevy-aqua-sdf", "crates/bevy-aqua-geom", "crates/bevy-aqua-light", "crates/bevy-aqua-medium", "crates/bevy-aqua-optics", "crates/bevy-aqua-core", "crates/bevy-aqua-waves", "crates/bevy-aqua-foam", "crates/bevy-aqua-shore", "crates/bevy-aqua-query", "crates/bevy-aqua-reflect", "crates/bevy-aqua-spray", "crates/bevy-aqua-motion", "crates/bevy-aqua-volume"]
 resolver = "2"
 
 [workspace.package]
@@ -15,6 +15,7 @@ bevy-aqua-fft = { path = "crates/bevy-aqua-fft", version = "0.1.3" }
 bevy-aqua-foam = { path = "crates/bevy-aqua-foam", version = "0.1.3" }
 bevy-aqua-geom = { path = "crates/bevy-aqua-geom", version = "0.1.3" }
 bevy-aqua-light = { path = "crates/bevy-aqua-light", version = "0.1.3" }
+bevy-aqua-medium = { path = "crates/bevy-aqua-medium", version = "0.1.3" }
 bevy-aqua-optics = { path = "crates/bevy-aqua-optics", version = "0.1.3" }
 bevy-aqua-motion = { path = "crates/bevy-aqua-motion", version = "0.1.3" }
 bevy-aqua-query = { path = "crates/bevy-aqua-query", version = "0.1.3" }
