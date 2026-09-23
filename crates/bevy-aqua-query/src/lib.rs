@@ -3,11 +3,11 @@
 #![warn(unreachable_pub)]
 //!
 //! Insert [`WaveQuery`] on any entity with a transform to receive the rendered
-//! water displacement and surface normal at its origin every frame in
-//! [`WaveSurface`]. Samples follow the same AnimWaves cascades, LOD blending,
-//! and detail-LOD clamps as the visible surface, so objects float on exactly
-//! what players see. Results arrive with roughly one frame of latency because
-//! they are computed on the GPU and read back asynchronously.
+//! water displacement and surface normal at its origin in [`WaveSurface`].
+//! Samples use the AnimWaves cascades and detail-LOD clamps; mesh morphing
+//! and shading normals can differ from this gameplay sample. Results arrive
+//! asynchronously, usually with roughly one frame of latency. A skipped wave
+//! or query pass retains the last result rather than publishing a new sample.
 //!
 //! Every probe — ocean, bounded pond, or river body — goes through the one
 //! compute dispatch and readback: extraction resolves each probe against
@@ -47,16 +47,17 @@ use bevy::{
 };
 
 use bevy_aqua_core::{
-    AnimWavesUniformSlot, Data, Ocean, OceanView, ResolvedWaterBodies, ResolvedWaterBody, pass,
+    AnimWavesStatus, AnimWavesUniformSlot, Data, Ocean, OceanView, ResolvedWaterBodies,
+    ResolvedWaterBody, pass,
 };
 use bevy_aqua_sdf::FlowSample;
 
 const SHADER_PATH: &str = "embedded://bevy_aqua_query/wave_query.wgsl";
 pub(crate) const MAX_QUERIES: u32 = 256;
 const WORKGROUP_SIZE: u32 = 64;
-const RESULT_FLOATS: usize = 12;
-const VALIDITY_INDEX: usize = 7;
-const SLOT_INDEX: usize = 3;
+// Serial comparisons require fewer than 2^31 batches between a result and
+// its submission/re-entry/last-applied barrier (about 207 days at 120 Hz).
+const GENERATION_HALF_RANGE: u32 = 1 << 31;
 
 /// Marks an entity for per-frame water sampling at its world origin.
 ///
@@ -85,9 +86,9 @@ pub struct WaveQuery;
 
 /// The sampled water surface at a [`WaveQuery`] entity's origin.
 ///
-/// Refreshed every frame with roughly one frame of latency. Until the first
-/// result arrives, or while no surface contains the query, [`WaveSurface::valid`]
-/// is false.
+/// Updated when a fresh GPU result arrives. Until the first result, or while
+/// no surface contains the query, [`WaveSurface::valid`] is false. Skipped
+/// dispatches retain the previous sample.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct WaveSurface {
     /// World-space wave displacement relative to the owning surface's mean
@@ -95,7 +96,7 @@ pub struct WaveSurface {
     pub displacement: Vec3,
     /// Unit surface normal at the sample point.
     pub normal: Vec3,
-    /// Whether this query currently resolves to an ocean or bounded body.
+    /// Whether a sample has arrived since this probe last entered water.
     pub valid: bool,
     /// Instantaneous breaking-crest source in `[0, 1]`, derived from the
     /// same horizontal-displacement compression that feeds persistent foam.
@@ -116,9 +117,9 @@ impl Default for WaveSurface {
 #[derive(ShaderType, Clone, Copy, Debug, Default)]
 struct QueryRequest {
     world_xz: Vec2,
-    slot: f32,
+    slot: u32,
     // 0: ocean cascade, 1: flat bounded body, 2: analytic river.
-    kind: f32,
+    kind: u32,
     // River synthesis inputs: xy local current (m/s), z signed bank
     // margin (m), w channel half width (m). Positive width selects the
     // river analytic path even when authored current is zero.
@@ -127,16 +128,34 @@ struct QueryRequest {
 
 #[derive(ShaderType, Clone, Copy, Debug, Default)]
 struct QueryResult {
-    displacement_slot: Vec4,
-    normal_validity: Vec4,
-    signals: Vec4,
+    displacement: Vec4,
+    normal_crest: Vec4,
+    // x: integer slot, y: batch generation, z: validity, w: reserved.
+    metadata: UVec4,
+}
+
+#[derive(ShaderType, Clone, Copy, Debug, Default)]
+struct QueryBatch {
+    count: u32,
+    generation: u32,
+    reserved: UVec2,
+}
+
+#[derive(Debug)]
+struct RegisteredProbe {
+    entity: Entity,
+    accepting: bool,
+    first_generation: u32,
+    latest_submitted: u32,
+    latest_applied: Option<u32>,
 }
 
 #[derive(Resource, Debug, Default)]
 struct Registry {
     next_slot: u32,
+    generation: u32,
     slots: HashMap<Entity, u32>,
-    entities: HashMap<u32, Entity>,
+    probes: HashMap<u32, RegisteredProbe>,
 }
 
 impl Registry {
@@ -144,18 +163,79 @@ impl Registry {
         if self.slots.contains_key(&entity) {
             return None;
         }
-        self.next_slot += 1;
-        let slot = self.next_slot;
+        // Do not recycle identities while an old readback may still exist.
+        let slot = self.next_slot.checked_add(1)?;
+        self.next_slot = slot;
         self.slots.insert(entity, slot);
-        self.entities.insert(slot, entity);
+        self.probes.insert(
+            slot,
+            RegisteredProbe {
+                entity,
+                accepting: false,
+                first_generation: 0,
+                latest_submitted: 0,
+                latest_applied: None,
+            },
+        );
         Some(slot)
     }
 
     fn reclaim(&mut self, entity: Entity) {
         if let Some(slot) = self.slots.remove(&entity) {
-            self.entities.remove(&slot);
+            self.probes.remove(&slot);
         }
     }
+
+    fn next_generation(&mut self) -> u32 {
+        self.generation = self.generation.wrapping_add(1);
+        self.generation
+    }
+
+    // Records extraction, not GPU completion. Only the shader echoes a
+    // generation into results, and only after all dispatch gates pass.
+    fn submit(&mut self, slot: u32, generation: u32) {
+        let Some(probe) = self.probes.get_mut(&slot) else {
+            return;
+        };
+        if !probe.accepting {
+            probe.accepting = true;
+            probe.first_generation = generation;
+            probe.latest_applied = None;
+        }
+        probe.latest_submitted = generation;
+    }
+
+    fn invalidate(&mut self, entity: Entity) {
+        let Some(slot) = self.slots.get(&entity) else {
+            return;
+        };
+        if let Some(probe) = self.probes.get_mut(slot) {
+            probe.accepting = false;
+        }
+    }
+
+    fn accept(&mut self, slot: u32, generation: u32) -> Option<Entity> {
+        let probe = self.probes.get_mut(&slot)?;
+        let fresh = match probe.latest_applied {
+            Some(applied) => generation_after(generation, applied),
+            None => {
+                generation == probe.first_generation
+                    || generation_after(generation, probe.first_generation)
+            }
+        };
+        let submitted = generation == probe.latest_submitted
+            || generation_after(probe.latest_submitted, generation);
+        if !probe.accepting || !fresh || !submitted {
+            return None;
+        }
+        probe.latest_applied = Some(generation);
+        Some(probe.entity)
+    }
+}
+
+fn generation_after(candidate: u32, reference: u32) -> bool {
+    let distance = candidate.wrapping_sub(reference);
+    distance != 0 && distance < GENERATION_HALF_RANGE
 }
 
 #[derive(Resource, Clone, ExtractResource)]
@@ -168,6 +248,7 @@ struct Buffers {
 struct Batch {
     bytes: Vec<u8>,
     count: usize,
+    generation: u32,
 }
 
 /// Registers extraction, GPU sampling, and async readback for [`WaveQuery`].
@@ -179,7 +260,7 @@ impl Plugin for AquaQueryPlugin {
         embedded_asset!(app, "wave_query.wgsl");
         app.init_resource::<Registry>()
             .add_systems(Startup, init_buffers)
-            .add_systems(Update, (assign_slots, reclaim_slots))
+            .add_systems(Update, (reclaim_slots, assign_slots).chain())
             .add_plugins(ExtractResourcePlugin::<Buffers>::default());
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
             render
@@ -217,9 +298,13 @@ fn init_buffers(mut commands: Commands, mut buffers: ResMut<Assets<ShaderBuffer>
         .observe(apply_results);
 }
 
-fn assign_slots(spawned: Query<Entity, Added<WaveQuery>>, mut registry: ResMut<Registry>) {
-    for entity in &spawned {
+fn assign_slots(
+    mut spawned: Query<(Entity, &mut WaveSurface), Added<WaveQuery>>,
+    mut registry: ResMut<Registry>,
+) {
+    for (entity, mut surface) in &mut spawned {
         registry.assign(entity);
+        *surface = WaveSurface::default();
     }
 }
 
@@ -229,13 +314,16 @@ fn reclaim_slots(mut removed: RemovedComponents<WaveQuery>, mut registry: ResMut
     }
 }
 
-fn pack_requests(submissions: &[(u32, Vec2, f32, Vec4)]) -> (Vec<u8>, usize) {
+fn pack_requests(submissions: &[(u32, Vec2, u32, Vec4)]) -> (Vec<u8>, usize) {
     let count = submissions.len().min(MAX_QUERIES as usize);
+    if count == 0 {
+        return (Vec::new(), 0);
+    }
     let mut requests = Vec::with_capacity(count);
     for &(slot, world_xz, kind, flow) in submissions.iter().take(count) {
         requests.push(QueryRequest {
             world_xz,
-            slot: slot as f32,
+            slot,
             kind,
             flow,
         });
@@ -246,27 +334,24 @@ fn pack_requests(submissions: &[(u32, Vec2, f32, Vec4)]) -> (Vec<u8>, usize) {
     (bytes, count)
 }
 
-fn decode_results(data: &[u8], entities: &HashMap<u32, Entity>) -> Vec<(Entity, Vec3, Vec3, f32)> {
-    let floats: Vec<f32> = data
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|chunk| f32::from_le_bytes(*chunk))
-        .collect();
+fn decode_results(data: &[u8], registry: &mut Registry) -> Vec<(Entity, Vec3, Vec3, f32)> {
+    let wrapper = bevy::render::render_resource::encase::StorageBuffer::new(data);
+    let results: Vec<QueryResult> = wrapper
+        .create()
+        .expect("wave-query result buffer must match QueryResult");
     let mut samples = Vec::new();
-    for record in floats.as_chunks::<RESULT_FLOATS>().0 {
-        if record[VALIDITY_INDEX] != 1.0 {
+    for result in results.into_iter().take(MAX_QUERIES as usize) {
+        if result.metadata.z != 1 {
             continue;
         }
-        let slot = record[SLOT_INDEX] as u32;
-        let Some(entity) = entities.get(&slot) else {
+        let Some(entity) = registry.accept(result.metadata.x, result.metadata.y) else {
             continue;
         };
         samples.push((
-            *entity,
-            Vec3::from_slice(&record[0..3]),
-            Vec3::from_slice(&record[4..7]),
-            record[8].clamp(0.0, 1.0),
+            entity,
+            result.displacement.truncate(),
+            result.normal_crest.truncate(),
+            result.normal_crest.w.clamp(0.0, 1.0),
         ));
     }
     samples
@@ -274,10 +359,10 @@ fn decode_results(data: &[u8], entities: &HashMap<u32, Entity>) -> Vec<(Entity, 
 
 fn apply_results(
     event: On<ReadbackComplete>,
-    registry: Res<Registry>,
-    mut surfaces: Query<&mut WaveSurface>,
+    mut registry: ResMut<Registry>,
+    mut surfaces: Query<&mut WaveSurface, With<WaveQuery>>,
 ) {
-    let merged = decode_results(&event.data, &registry.entities);
+    let merged = decode_results(&event.data, &mut registry);
     for (entity, displacement, normal, crest) in merged {
         if let Ok(mut surface) = surfaces.get_mut(entity) {
             surface.displacement = displacement;
@@ -316,28 +401,37 @@ fn probe_resolution(
 fn extract_wave_queries(mut main_world: ResMut<MainWorld>, mut commands: Commands) {
     let bodies = main_world.resource::<ResolvedWaterBodies>().0.clone();
     let ocean_level = main_world.get_resource::<Ocean>().map(|ocean| ocean.level);
-    let mut submissions: Vec<(u32, Vec2, f32, Vec4)> = Vec::new();
+    let slots = main_world.resource::<Registry>().slots.clone();
+    let generation = main_world.resource_mut::<Registry>().next_generation();
+    let mut submissions: Vec<(u32, Vec2, u32, Vec4)> = Vec::new();
     let mut invalid = Vec::new();
-    let mut probes = main_world.query::<(Entity, &GlobalTransform, &WaveQuery)>();
+    let mut probes = main_world.query::<(Entity, Option<&GlobalTransform>, &WaveQuery)>();
     for (entity, transform, _) in probes.iter(&main_world) {
-        if submissions.len() >= MAX_QUERIES as usize {
-            break;
-        }
-        let Some(slot) = main_world.resource::<Registry>().slots.get(&entity) else {
+        let Some(slot) = slots.get(&entity) else {
             continue;
         };
-        let position = transform.translation();
-        let world_xz = position.xz();
+        let Some(world_xz) = transform
+            .map(|transform| transform.translation().xz())
+            .filter(|position| position.is_finite())
+        else {
+            invalid.push(entity);
+            continue;
+        };
         let Some(resolution) = probe_resolution(&bodies, ocean_level, world_xz) else {
             invalid.push(entity);
             continue;
         };
+        // Over-budget probes still in water keep their previous result.
+        // Exits and invalid positions must close their old readback epoch.
+        if submissions.len() >= MAX_QUERIES as usize {
+            continue;
+        }
         match resolution {
             ProbeResolution::River { flowed, .. } => {
                 submissions.push((
                     *slot,
                     world_xz,
-                    2.0,
+                    2,
                     Vec4::new(
                         flowed.flow.x,
                         flowed.flow.y,
@@ -347,11 +441,23 @@ fn extract_wave_queries(mut main_world: ResMut<MainWorld>, mut commands: Command
                 ));
             }
             ProbeResolution::Body => {
-                submissions.push((*slot, world_xz, 1.0, Vec4::ZERO));
+                submissions.push((*slot, world_xz, 1, Vec4::ZERO));
             }
             ProbeResolution::Ocean => {
-                submissions.push((*slot, world_xz, 0.0, Vec4::ZERO));
+                submissions.push((*slot, world_xz, 0, Vec4::ZERO));
             }
+        }
+    }
+    // Sort only the admitted prefix. Admission follows ECS iteration and
+    // can change after archetype moves; over-budget probes keep their sample.
+    submissions.sort_by_key(|(slot, ..)| *slot);
+    {
+        let mut registry = main_world.resource_mut::<Registry>();
+        for &(slot, ..) in &submissions {
+            registry.submit(slot, generation);
+        }
+        for &entity in &invalid {
+            registry.invalidate(entity);
         }
     }
     for entity in invalid {
@@ -359,10 +465,12 @@ fn extract_wave_queries(mut main_world: ResMut<MainWorld>, mut commands: Command
             *surface = WaveSurface::default();
         }
     }
-    // Stable order keeps the GPU submission deterministic across frames.
-    submissions.sort_by_key(|(slot, ..)| *slot);
     let (bytes, count) = pack_requests(&submissions);
-    commands.insert_resource(Batch { bytes, count });
+    commands.insert_resource(Batch {
+        bytes,
+        count,
+        generation,
+    });
 }
 
 const QUERY: &str = "Wave query";
@@ -383,6 +491,7 @@ fn pass_table() -> Vec<pass::PassSpec> {
                     texture_2d_array(TextureSampleType::Float { filterable: true }),
                     sampler(SamplerBindingType::Filtering),
                     uniform_buffer::<bevy_aqua_core::AnimWavesUniform>(false),
+                    uniform_buffer::<QueryBatch>(false),
                     storage_buffer_read_only::<QueryRequest>(false),
                     storage_buffer::<QueryResult>(false),
                 ),
@@ -391,11 +500,25 @@ fn pass_table() -> Vec<pass::PassSpec> {
     }]
 }
 
+// Asset handles can survive replacement of their underlying GPU objects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BindingKey {
+    texture: TextureViewId,
+    sampler: SamplerId,
+    waves: BufferId,
+    batch: BufferId,
+    requests: BufferId,
+    results: BufferId,
+}
+
 #[derive(Resource)]
 struct Prepared {
     passes: pass::Passes,
     sampler: Sampler,
+    batch: Option<UniformBuffer<QueryBatch>>,
     groups: pass::Groups,
+    bound: Option<BindingKey>,
+    ready: bool,
 }
 
 fn init_pipeline(
@@ -411,25 +534,47 @@ fn init_pipeline(
     commands.insert_resource(Prepared {
         passes: pass::Passes::new(&asset_server, &cache, pass_table()),
         sampler,
+        batch: None,
         groups: pass::Groups::default(),
+        bound: None,
+        ready: false,
     });
 }
 
 fn prepare_bind_groups(
-    resources: (Res<Data>, Res<AnimWavesUniformSlot>, Option<Res<Buffers>>),
+    resources: (
+        Res<Data>,
+        Res<AnimWavesUniformSlot>,
+        Option<Res<Buffers>>,
+        Res<Batch>,
+    ),
     assets: (
         Res<RenderAssets<GpuImage>>,
         Res<RenderAssets<GpuShaderBuffer>>,
     ),
-    device: (Res<RenderDevice>, Res<PipelineCache>),
+    device: (Res<RenderDevice>, Res<RenderQueue>, Res<PipelineCache>),
     mut prepared: ResMut<Prepared>,
 ) {
-    let (data, slot, buffers) = resources;
+    let (data, slot, buffers, batch) = resources;
+    prepared.ready = false;
+    pass::write_uniform(
+        &mut prepared.batch,
+        QueryBatch {
+            count: batch.count as u32,
+            generation: batch.generation,
+            reserved: UVec2::ZERO,
+        },
+        &device.0,
+        &device.1,
+    );
     let (images, ssbos) = assets;
     let anim_waves = data.texture();
-    let (Some(buffers), Some(output), Some(uniform)) =
-        (buffers.as_ref(), images.get(&anim_waves), slot.0.as_ref())
-    else {
+    let (Some(buffers), Some(output), Some(uniform), Some(batch_uniform)) = (
+        buffers.as_ref(),
+        images.get(&anim_waves),
+        slot.0.as_ref(),
+        prepared.batch.as_ref(),
+    ) else {
         return;
     };
     let (Some(requests), Some(results)) =
@@ -437,12 +582,24 @@ fn prepare_bind_groups(
     else {
         return;
     };
-    if prepared.groups.created() {
+    let (Some(wave_buffer), Some(batch_buffer)) = (uniform.buffer(), batch_uniform.buffer()) else {
+        return;
+    };
+    let key = BindingKey {
+        texture: output.texture_view.id(),
+        sampler: prepared.sampler.id(),
+        waves: wave_buffer.id(),
+        batch: batch_buffer.id(),
+        requests: requests.buffer.id(),
+        results: results.buffer.id(),
+    };
+    if prepared.bound == Some(key) {
+        prepared.ready = true;
         return;
     }
     let group = pass::bind_group(
         &device.0,
-        &device.1,
+        &device.2,
         &prepared.passes,
         QUERY,
         QUERY,
@@ -450,6 +607,7 @@ fn prepare_bind_groups(
             &output.texture_view,
             &prepared.sampler,
             uniform,
+            batch_uniform,
             BufferBinding {
                 buffer: &requests.buffer,
                 offset: 0,
@@ -463,11 +621,18 @@ fn prepare_bind_groups(
         )),
     );
     prepared.groups.register("query", group);
+    prepared.bound = Some(key);
+    prepared.ready = true;
 }
 
 fn dispatch_wave_query(
     view: ViewQuery<Option<&OceanView>>,
-    resources: (Res<Batch>, Res<Prepared>, Option<Res<Buffers>>),
+    resources: (
+        Res<Batch>,
+        Res<Prepared>,
+        Option<Res<Buffers>>,
+        Res<AnimWavesStatus>,
+    ),
     assets: (Res<RenderAssets<GpuShaderBuffer>>, Res<RenderQueue>),
     cache: Res<PipelineCache>,
     mut context: RenderContext,
@@ -475,9 +640,9 @@ fn dispatch_wave_query(
     if view.into_inner().is_none() {
         return;
     }
-    let (batch, prepared, buffers) = resources;
+    let (batch, prepared, buffers, waves) = resources;
     let (ssbos, queue) = assets;
-    if batch.count == 0 {
+    if batch.count == 0 || !waves.written || !prepared.ready {
         return;
     }
     let Some(group) = prepared.groups.get("query") else {
@@ -506,3 +671,7 @@ fn dispatch_wave_query(
 #[cfg(test)]
 #[path = "query_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "gpu_tests.rs"]
+mod gpu_tests;

@@ -240,6 +240,8 @@ pub struct Prepared {
     uniform: Option<UniformBuffer<Uniform>>,
     fft_uniform: Option<UniformBuffer<fft::Uniform>>,
     groups: pass::Groups,
+    bed_binding: Option<(AssetId<Image>, TextureViewId)>,
+    ready: bool,
 }
 
 impl std::fmt::Debug for Prepared {
@@ -297,6 +299,8 @@ fn init_pipeline(
         uniform: None,
         fft_uniform: None,
         groups: pass::Groups::default(),
+        bed_binding: None,
+        ready: false,
     });
     // Shared slot: the query pass binds this buffer through the contract.
     commands.insert_resource(AnimWavesUniformSlot::default());
@@ -311,11 +315,22 @@ fn prepare_bind_groups(
     device: (Res<RenderDevice>, Res<RenderQueue>, Res<PipelineCache>),
     mut prepared: ResMut<Prepared>,
 ) {
-    // The bed is a world-static heightmap; scenes without one bind the
-    // cleared fallback so shaders take their deep default.
+    prepared.ready = false;
+    let bed_id = bed.as_ref().map_or(fallback.0.id(), |bed| bed.image.id());
+    // Drop old groups before a new handle is resolved. Its metadata may
+    // already be in this frame while its GPU image is still unavailable.
+    if prepared.bed_binding.map(|(id, _)| id) != Some(bed_id) {
+        prepared.groups = pass::Groups::default();
+        prepared.bed_binding = None;
+    }
     let Some(bed_gpu) = bed::gpu_image(bed.as_deref(), &fallback, &images) else {
         return;
     };
+    let bed_binding = (bed_id, bed_gpu.texture_view.id());
+    if prepared.bed_binding != Some(bed_binding) {
+        prepared.groups = pass::Groups::default();
+        prepared.bed_binding = None;
+    }
     let (Some(output), Some(surface), Some(raw), Some(bed), Some(scratch_a), Some(scratch_b)) = (
         images.get(&frame.output),
         images.get(&frame.surface),
@@ -344,6 +359,7 @@ fn prepare_bind_groups(
         uniform,
         fft_uniform,
         groups,
+        ..
     } = &mut *prepared;
     pass::write_uniform(uniform, frame.uniform.clone(), &device.0, &device.1);
     pass::write_uniform(fft_uniform, frame.fft_uniform.clone(), &device.0, &device.1);
@@ -359,6 +375,7 @@ fn prepare_bind_groups(
         buffer.write_buffer(&device.0, &device.1);
     }
     if groups.created() {
+        prepared.ready = true;
         return;
     }
     let uniform = uniform.as_ref().unwrap();
@@ -507,6 +524,8 @@ fn prepare_bind_groups(
             &BindGroupEntries::sequential((&source, &target))
         );
     }
+    prepared.bed_binding = Some(bed_binding);
+    prepared.ready = true;
 }
 
 fn cascade_grid(layers: u32) -> [u32; 3] {
@@ -711,6 +730,9 @@ fn write_anim_waves(
     }
     status.written = false;
     let (frame, prepared, cache) = resources;
+    if !prepared.ready {
+        return;
+    }
     let spans = match frame.model {
         WaveModel::Analytic => gerstner_spans(&prepared, &cache),
         WaveModel::Spectral => fft_spans(&frame, &prepared, &cache),
@@ -719,3 +741,7 @@ fn write_anim_waves(
     pass::run_spans(&mut context, &spans);
     status.written = true;
 }
+
+#[cfg(test)]
+#[path = "gpu_tests.rs"]
+mod gpu_tests;

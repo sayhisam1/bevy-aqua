@@ -183,10 +183,11 @@ a claim of visual validation on every target.
 
 ### Terrain bed
 
-Insert a `BedHeightMap` before `AquaPlugin`. Its single-channel image stores
-normalized height. `origin` is the world-XZ centre of texel `(0, 0)`, `size`
-is the distance from the first to last texel centres, and `height_range`
-decodes normalized values to metres.
+Insert a `BedHeightMap` at startup or during play. You can replace it to switch
+heightfields or remove the resource. Its single-channel image stores normalized
+height. `origin` is the world-XZ centre of texel `(0, 0)`, `size` is the distance
+from the first to last texel centres, and `height_range` decodes normalized values
+to metres.
 
 ```rust,ignore
 commands.insert_resource(BedHeightMap {
@@ -197,7 +198,16 @@ commands.insert_resource(BedHeightMap {
 });
 ```
 
-Without a bed map, Aqua uses deep-water attenuation everywhere.
+Create a new `Image` asset for replacement heightfield data, then replace the
+`BedHeightMap` with its new handle and matching decode metadata. In-place texel
+edits that keep the same authored image handle are not a supported terrain-update
+contract.
+
+Wave and foam passes wait while the selected bed image is missing or not yet
+prepared on the GPU. They retain their last complete output textures, and foam
+history does not advance during the wait. They resume when the image is ready.
+Removal restores the deep-water fallback; without a bed map, Aqua uses deep-water
+attenuation everywhere.
 
 ### Localized water and queries
 
@@ -231,6 +241,46 @@ frame of readback latency. Rivers use the matching analytic path; other bounded
 shapes remain flat, matching their rendered geometry. The per-frame limit is
 256 probes. `WaveSurface::crest` exposes the same
 horizontal-compression source used to seed persistent whitecaps.
+
+### Maintainer GPU query test
+
+The ignored query regression needs a native hardware GPU and driver; it uses a
+32×32 offscreen target, with no window. From the repository root, run it alone
+under the shared GPU capture lock:
+
+```sh
+flock -x /tmp/apophany-capture.lock timeout --kill-after=10s 240s \
+  cargo test -p bevy-aqua-query --lib --locked gpu_tests::gpu_query_protocol -- \
+  --exact --ignored --nocapture --test-threads=1
+```
+
+Build first with `cargo test -p bevy-aqua-query --lib --locked --no-run` if needed,
+so compilation does not consume the run timeout. Set `AQUA_QUERY_GPU_ARTIFACTS`
+to an absolute directory outside the repository to retain raw readback buffers.
+The test prints the adapter and fails if any protocol check fails.
+
+### Maintainer GPU bed/FFT tests
+
+The three ignored bed/FFT tests use the production wave and foam shaders and need
+a native GPU and driver. From the repository root, build the test binaries:
+
+```sh
+cargo test -p bevy-aqua-waves -p bevy-aqua-foam --lib --locked --no-run
+```
+
+Set `WAVES_TEST` and `FOAM_TEST` to the executable paths Cargo prints. Archive
+copies first if reusing a build target across source trees. Run the two wave tests
+and the foam history test directly under the shared GPU capture lock:
+
+```sh
+flock -x /tmp/apophany-capture.lock timeout --kill-after=10s 300s \
+  "$WAVES_TEST" render::gpu_tests::gpu_bed_ --ignored --nocapture --test-threads=1
+flock -x /tmp/apophany-capture.lock timeout --kill-after=10s 300s \
+  "$FOAM_TEST" render::gpu_tests::gpu_bed_ --ignored --nocapture --test-threads=1
+```
+
+Set `AQUA_BED_GPU_ARTIFACTS` to an absolute directory outside the repository to
+retain raw texture readbacks. These compute/state checks are not visual acceptance.
 
 ### Spatial consistency (unreleased)
 

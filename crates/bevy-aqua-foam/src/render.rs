@@ -80,6 +80,8 @@ struct Prepared {
     passes: pass::Passes,
     uniform: Option<UniformBuffer<Uniform>>,
     groups: pass::Groups,
+    bed_binding: Option<(AssetId<Image>, TextureViewId)>,
+    ready: bool,
     state_is_a: bool,
     completed_tick: u32,
     state_layout: Option<bevy_aqua_core::GpuLayout>,
@@ -94,6 +96,8 @@ fn init_pipeline(
         passes: pass::Passes::new(&asset_server, &cache, pass_table()),
         uniform: None,
         groups: pass::Groups::default(),
+        bed_binding: None,
+        ready: false,
         state_is_a: true,
         completed_tick: 0,
         state_layout: None,
@@ -108,9 +112,22 @@ fn prepare_bind_groups(
     device: (Res<RenderDevice>, Res<RenderQueue>, Res<PipelineCache>),
     mut prepared: ResMut<Prepared>,
 ) {
+    prepared.ready = false;
+    let bed_id = bed.as_ref().map_or(fallback.0.id(), |bed| bed.image.id());
+    // Drop old groups before a new handle is resolved. Its metadata may
+    // already be in this frame while its GPU image is still unavailable.
+    if prepared.bed_binding.map(|(id, _)| id) != Some(bed_id) {
+        prepared.groups = pass::Groups::default();
+        prepared.bed_binding = None;
+    }
     let Some(depth) = bed::gpu_image(bed.as_deref(), &fallback, &images) else {
         return;
     };
+    let bed_binding = (bed_id, depth.texture_view.id());
+    if prepared.bed_binding != Some(bed_binding) {
+        prepared.groups = pass::Groups::default();
+        prepared.bed_binding = None;
+    }
     let (Some(state_a), Some(state_b), Some(waves), Some(wave_surface)) = (
         images.get(&frame.state_a),
         images.get(&frame.state_b),
@@ -127,6 +144,7 @@ fn prepare_bind_groups(
     pass::write_uniform(&mut prepared.uniform, uniform_value, &device.0, &device.1);
 
     if prepared.groups.created() {
+        prepared.ready = true;
         return;
     }
     let Prepared {
@@ -162,6 +180,8 @@ fn prepare_bind_groups(
     }
     direction!("a_to_b", "Aqua foam A to B", state_b, state_a);
     direction!("b_to_a", "Aqua foam B to A", state_a, state_b);
+    prepared.bed_binding = Some(bed_binding);
+    prepared.ready = true;
 }
 
 fn write_foam(
@@ -176,7 +196,7 @@ fn write_foam(
     if view.into_inner().is_none() {
         return;
     }
-    if !waves_status.written {
+    if !waves_status.written || !prepared.ready {
         return;
     }
     let (Some(state_a), Some(state_b), Some(surface)) = (
@@ -255,3 +275,7 @@ fn write_foam(
         .saturating_add(pending_steps.min(MAX_CATCH_UP_STEPS));
     prepared.state_layout = Some(frame.uniform.target_layout.clone());
 }
+
+#[cfg(test)]
+#[path = "gpu_tests.rs"]
+mod gpu_tests;

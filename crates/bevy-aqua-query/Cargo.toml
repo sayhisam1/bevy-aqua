@@ -15,5 +15,9 @@ bevy = { workspace = true, features = [
     "bevy_render",
 ] }
 
+[dev-dependencies]
+bevy-aqua-waves.workspace = true
+bevy = { workspace = true, features = ["bevy_window"] }
+
 [lints]
 workspace = true

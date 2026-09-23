@@ -235,7 +235,7 @@ fn foam_history_commits_only_after_readiness_and_surface_copy_encoding() {
     let before_encode = &write[..encode];
     for guard in [
         "ifview.into_inner().is_none(){return;}",
-        "if!waves_status.written{return;}",
+        "if!waves_status.written||!prepared.ready{return;}",
         "let(Some(state_a),Some(state_b),Some(surface))=(images.get(&frame.state_a),images.get(&frame.state_b),images.get(&frame.surface))else{return;};",
         "let(Some(group_a_to_b),Some(group_b_to_a))=(prepared.groups.get(\"a_to_b\"),prepared.groups.get(\"b_to_a\"))else{return;};",
         "letSome(ready)=prepared.passes.ready_all(&cache,&[(UPDATE,PREVIOUS),(UPDATE,PREVIOUS_ZERO),(UPDATE,CURRENT),])else{return;};",

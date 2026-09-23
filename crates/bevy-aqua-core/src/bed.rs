@@ -11,6 +11,7 @@ use bevy::{
     asset::RenderAssetUsages,
     prelude::*,
     render::{
+        Extract, RenderApp,
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         render_asset::RenderAssets,
         render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -35,6 +36,10 @@ pub const NO_BED_DEPTH: f32 = 256.0;
 /// [`BedHeightMap::size`] is the distance from the first texel centre to the
 /// last, not the distance between the outer pixel edges. For an `N`-texel
 /// axis with spacing `step`, this distance is `(N - 1) * step`.
+///
+/// Insert, replace, or remove this resource to change the bed. A replacement
+/// image must become GPU-ready before dependent wave and foam passes resume.
+/// This does not support live terrain edits that reuse the same image handle.
 #[derive(Resource, Debug, Clone, ExtractResource)]
 pub struct BedHeightMap {
     /// Single-channel image; red channel holds normalised height in [0, 1].
@@ -134,7 +139,22 @@ pub fn gpu_image<'a>(
 
 /// Registers extraction for the bed map and fallback.
 pub fn add(app: &mut App) {
-    app.add_plugins(ExtractResourcePlugin::<BedHeightMap>::default());
     app.init_resource::<GpuFallback>();
     app.add_plugins(ExtractResourcePlugin::<GpuFallback>::default());
+    if let Some(render) = app.get_sub_app_mut(RenderApp) {
+        render.add_systems(ExtractSchedule, extract_bed);
+    }
 }
+
+// Generic resource extraction does not remove a vanished main-world resource.
+fn extract_bed(mut commands: Commands, bed: Extract<Option<Res<BedHeightMap>>>) {
+    if let Some(bed) = bed.as_ref() {
+        commands.insert_resource((**bed).clone());
+    } else {
+        commands.remove_resource::<BedHeightMap>();
+    }
+}
+
+#[cfg(test)]
+#[path = "bed_tests.rs"]
+mod tests;

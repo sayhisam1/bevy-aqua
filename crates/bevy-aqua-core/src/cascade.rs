@@ -522,6 +522,7 @@ pub struct UpdateInputs<'w> {
     pub waves: Res<'w, OceanWaves>,
     pub sea_level: Res<'w, ViewSeaLevel>,
     pub bed: Option<Res<'w, crate::bed::BedHeightMap>>,
+    pub fallback: Res<'w, crate::bed::GpuFallback>,
 }
 
 /// Packs `SurfaceParams::far_tier`: a non-negative start, an end at least one
@@ -553,8 +554,18 @@ pub fn update(
         waves,
         sea_level,
         bed,
+        fallback,
     } = inputs;
-    if !view.is_changed()
+    let bed_image = bed.as_ref().map_or(&fallback.0, |bed| &bed.image);
+    let bed_binding_changed = materials
+        .get(&data.material)
+        .expect("Aqua's cascade material must remain loaded")
+        .sea_floor
+        != *bed_image;
+    let bed_removed = bed.is_none() && data.layout.bed_range.y != bed::NO_BED_SPAN;
+    if !bed_binding_changed
+        && !bed_removed
+        && !view.is_changed()
         && !detail.is_changed()
         && !debug.is_changed()
         && !settings.is_changed()
@@ -621,11 +632,8 @@ pub fn update(
             .get_mut(&data.material)
             .expect("Aqua's cascade material must remain loaded");
         material.layout = layout.clone();
-        if settings.caustics.is_some()
-            && let Some(bed) = bed.as_deref()
-        {
-            material.sea_floor = bed.image.clone();
-        }
+        // Bed depth also drives shoaling and transmission without caustics.
+        material.sea_floor = bed_image.clone();
         apply_globals(&mut material);
     }
 }
