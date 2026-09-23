@@ -6,7 +6,11 @@ const SCREEN: &str = include_str!("screen.wgsl");
 
 fn function(name: &str) -> &str {
     let marker = format!("fn {name}(");
-    let source = if SCREEN.contains(&marker) { SCREEN } else { OPTICS };
+    let source = if SCREEN.contains(&marker) {
+        SCREEN
+    } else {
+        OPTICS
+    };
     let start = source.find(&marker).unwrap();
     let tail = &source[start..];
     &tail[..tail.find("\n}\n").unwrap() + 3]

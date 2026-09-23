@@ -524,6 +524,19 @@ pub struct UpdateInputs<'w> {
     pub bed: Option<Res<'w, crate::bed::BedHeightMap>>,
 }
 
+/// Packs `SurfaceParams::far_tier`: a non-negative start, an end at least one
+/// metre past it, and the screen-space reflection switch.
+fn far_tier(settings: &AquaSettings) -> Vec4 {
+    let start = settings.far_tier_start.max(0.0);
+    let end = settings.far_tier_end.max(start + 1.0);
+    Vec4::new(
+        start,
+        end,
+        f32::from(settings.screen_space_reflections),
+        0.0,
+    )
+}
+
 /// Refreshes the material's layout and surface uniforms from the shared
 /// config resources when any of them change.
 pub fn update(
@@ -592,14 +605,7 @@ pub fn update(
         material.surface.capillary.y = detail.min(0.5);
         let heading = Vec2::from_angle(waves.wind_direction_degrees.to_radians());
         material.surface.advection = Vec4::new(waves.flow.x, waves.flow.y, heading.x, heading.y);
-        let far_start = settings.far_tier_start.max(0.0);
-        let far_end = settings.far_tier_end.max(far_start + 1.0);
-        let screen_space_reflections = if settings.screen_space_reflections {
-            1.0
-        } else {
-            0.0
-        };
-        material.surface.far_tier = Vec4::new(far_start, far_end, screen_space_reflections, 0.0);
+        material.surface.far_tier = far_tier(&settings);
         material.surface.sea_floor.w = caustic_sun.0.clamp(0.0, 1.0);
         material.surface.caustics = settings.caustics.map_or(Vec4::ZERO, |caustics| {
             Vec4::new(

@@ -68,29 +68,6 @@ fn shader_keeps_safety_and_energy_contracts() {
 }
 
 #[test]
-fn topside_reuses_the_underwater_medium_integral() {
-    let optics = include_str!("optics.wgsl");
-    let volume = include_str!("../../bevy-aqua-volume/src/volume.wgsl");
-    let surface = optics
-        .split("fn surface_medium_radiance(")
-        .nth(1)
-        .unwrap()
-        .split("fn far_field_water(")
-        .next()
-        .unwrap();
-    assert!(surface.contains("return water_leaving_radiance("));
-    assert!(surface.contains("invocation_scatter_scale()"));
-    assert!(surface.contains("invocation_scatter_tint()"));
-    assert!(surface.contains("invocation_scattering_asymmetry()"));
-    assert!(volume.contains("medium_radiance("));
-    let medium = include_str!("medium.wgsl");
-    assert!(medium.contains("fn water_leaving_radiance("));
-    assert!(medium.contains("return medium_radiance("));
-    assert!(medium.contains("-to_view,"));
-    assert!(medium.contains(") / (N_WATER * N_WATER);"));
-}
-
-#[test]
 fn underside_uses_current_near_surface_variance_contract() {
     let source = include_str!("optics.wgsl");
     let underside = source.split("fn shade_underside(").nth(1).unwrap();

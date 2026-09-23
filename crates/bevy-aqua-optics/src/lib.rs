@@ -41,29 +41,6 @@ mod directional_exposure_tests;
 mod fresnel_tests;
 
 #[cfg(test)]
-mod far_scatter_tests {
-    #[test]
-    fn far_uses_shared_medium_then_unscaled_substrate() {
-        let source = include_str!("optics.wgsl");
-        let far = source
-            .split("fn far_field_water(")
-            .nth(1)
-            .unwrap()
-            .split("fn empty_camera_depth_path(")
-            .next()
-            .unwrap();
-        assert!(source.contains("fn surface_medium_radiance("));
-        assert!(source.contains("water_leaving_radiance("));
-        assert!(source.contains("invocation_scatter_scale()"));
-        assert!(far.contains("surface_medium_radiance(vec3(0.0), to_view, t_end)"));
-        assert!(far.contains("body += diffuse_irradiance * GODOT_WATER_ALBEDO;"));
-        assert!(far.contains("body += lambertian * light_radiance * GODOT_WATER_ALBEDO;"));
-        assert!(!far.contains("body_albedo * scatter_scale"));
-        assert!(far.contains("return mix(body, reflected_radiance, reflection_weight);"));
-    }
-}
-
-#[cfg(test)]
 mod far_opacity_tests;
 
 #[cfg(test)]

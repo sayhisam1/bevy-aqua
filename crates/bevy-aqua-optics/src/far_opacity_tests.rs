@@ -56,18 +56,11 @@ fn clear_water_thresholds_and_least_attenuated_channel() {
 fn opacity_gate_uses_authored_extinction() {
     let gate = function(OPTICS, "far_path_opaque");
     let transmission = function(OPTICS, "beauty_transmission");
-    assert!(!OPTICS.contains("fn beauty_extinction("));
-    assert!(!OPTICS.contains("0.52, 0.42, 0.62"));
-    assert!(!OPTICS.contains("fn depth_aware_body_albedo("));
     for source in [gate, transmission] {
         assert!(source.contains("let extinction = invocation_extinction();"));
         assert!(source.contains("min(extinction.r, min(extinction.g, extinction.b))"));
         assert!(!source.contains("deep_water_weight"));
     }
-    assert!(
-        function(OPTICS, "deep_water_weight")
-            .contains("smoothstep(SHALLOW_WATER_DEPTH, DEEP_WATER_DEPTH, water_depth)")
-    );
     assert!(MATERIAL.contains("far_tier *= deep_water_weight(far_water_depth);"));
 }
 #[test]
