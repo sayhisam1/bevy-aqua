@@ -295,3 +295,33 @@ fn screen_space_reflections_default_off_and_pack_into_far_tier_z() {
     let common = include_str!("cascade/common.wgsl");
     assert!(common.contains("z: 1 when screen-space reflections are enabled."));
 }
+
+#[test]
+fn surface_params_rust_and_wgsl_mirror_field_for_field() {
+    fn fields<'a>(source: &'a str, open: &str) -> Vec<&'a str> {
+        source
+            .split(open)
+            .nth(1)
+            .unwrap()
+            .split('}')
+            .next()
+            .unwrap()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("///"))
+            .map(|line| {
+                let name = line.trim_start_matches("pub ").split(':').next().unwrap();
+                name.trim()
+            })
+            .collect()
+    }
+    let rust = fields(include_str!("cascade.rs"), "pub struct SurfaceParams {");
+    let wgsl = fields(include_str!("cascade/common.wgsl"), "struct SurfaceParams {");
+    assert_eq!(rust, wgsl);
+    // Every member is a full vec4, so encase and naga agree on the layout.
+    let mut bytes: Vec<u8> = Vec::new();
+    bevy::render::render_resource::encase::UniformBuffer::new(&mut bytes)
+        .write(&SurfaceParams::default())
+        .expect("surface params write");
+    assert_eq!(bytes.len(), 16 * (rust.len() + 1));
+}

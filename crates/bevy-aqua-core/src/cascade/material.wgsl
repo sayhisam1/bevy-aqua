@@ -565,7 +565,6 @@ fn fragment(
     let body_optics = bounded && params.optics_a.w > 0.5;
     set_body_optics(
         select(surface.fog_density.rgb, params.optics_a.rgb, body_optics),
-        select(1.0, params.optics_b.x, body_optics),
         select(surface.fog_density.w, params.optics_b.x, body_optics),
         select(surface.medium_scatter.rgb, params.optics_c.rgb, body_optics),
         select(surface.medium_scatter.w, params.optics_b.w, body_optics),

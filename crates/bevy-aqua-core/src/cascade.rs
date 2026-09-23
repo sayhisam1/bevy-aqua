@@ -231,7 +231,7 @@ pub struct BodyParams {
     /// profile; w: optics enable flag. Fresh-water bodies author low
     /// extinction so the bed shows through.
     optics_a: Vec4,
-    /// x: scatter-endpoint scale; y: direct-light roughness; w: HG asymmetry.
+    /// x: particle scatter scale; y: direct-light roughness; w: HG asymmetry.
     optics_b: Vec4,
     /// rgb: medium scatter tint; w reserved.
     optics_c: Vec4,
@@ -284,13 +284,13 @@ impl BodyParams {
 }
 
 /// Per-body water optics: low extinction keeps shallow fresh water clear
-/// over its bed; the scatter scale darkens the deep endpoint so pools read
+/// over its bed; a low scatter scale keeps deep pools dark so they read
 /// by depth instead of ocean turquoise.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BodyOptics {
     /// Per-channel Beer-Lambert extinction in inverse metres.
     pub extinction: Vec3,
-    /// Multiplier on the volume-scatter endpoint.
+    /// Particle scattering density; see `WaterOptics::scatter_scale`.
     pub scatter_scale: f32,
     /// Particle-scatter chromaticity.
     pub scatter_tint: Vec3,
@@ -300,18 +300,11 @@ pub struct BodyOptics {
     pub sun_roughness: f32,
 }
 
-/// Surface shading parameters uploaded with the material: colours,
+/// Surface shading parameters uploaded with the material: medium,
 /// Fresnel/reflection/sun controls, debug routing, and advection. Mirrors
 /// `SurfaceParams` in cascade/common.wgsl field for field.
 #[derive(ShaderType, Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceParams {
-    /// Deep-water body colour (rgb) with reserved alpha.
-    pub deep_color: Vec4,
-    /// Grazing-angle reflection tint (rgb).
-    pub grazing_color: Vec4,
-    /// Coastal scatter colour; alpha is the metric depth at which it
-    /// reaches deep water.
-    pub shallow_color: Vec4,
     /// x: water F0, y: Godot Fresnel power, z: specular strength, w reserved.
     pub fresnel: Vec4,
     /// x: FFT flag, y: micro-roughness strength, z: daylight lux,
@@ -323,14 +316,14 @@ pub struct SurfaceParams {
     /// x: mode, y: shader-property refraction strength, z: debug range,
     /// w: unused padding.
     pub debug: Vec4,
-    /// rgb: ocean Beer-Lambert extinction per channel; w: scatter scale.
+    /// rgb: ocean Beer-Lambert extinction per channel; w: particle scatter scale.
     pub fog_density: Vec4,
     /// x: maximum sampled depth; y: debug range; z: waterline fade depth;
     /// w: direct-sun visibility. Depths are metres.
     pub sea_floor: Vec4,
     /// Sunlit subsurface scattering tint (rgb); w reserved.
     pub sss_tint: Vec4,
-    /// Underwater particle scatter tint (rgb) and HG asymmetry (w).
+    /// Shared particle scatter tint (rgb) and HG asymmetry (w).
     pub medium_scatter: Vec4,
     /// SSS pedestal, strength, and range; w reserved.
     pub sss: Vec4,
@@ -358,12 +351,8 @@ pub struct SurfaceParams {
 }
 
 impl SurfaceParams {
-    /// Applies one optics preset's colours and extinction to the uniform.
+    /// Applies one optics preset's medium coefficients to the uniform.
     pub fn apply_optics(&mut self, optics: &WaterOptics) {
-        self.deep_color = optics.deep_color.extend(1.0);
-        self.grazing_color = optics.grazing_color.extend(1.0);
-        // Alpha is the metric depth at which coastal scatter reaches deep water.
-        self.shallow_color = optics.shallow_color.extend(7.0);
         self.fog_density = optics.extinction.extend(optics.scatter_scale);
         self.sss_tint = optics.sss_tint.extend(0.0);
         self.medium_scatter = optics.scatter_tint.extend(optics.scattering_asymmetry);
@@ -373,10 +362,6 @@ impl SurfaceParams {
 impl Default for SurfaceParams {
     fn default() -> Self {
         Self {
-            // Accepted Crest shader-property profile; see the Ocean.mat divergence above.
-            deep_color: Vec4::new(0.0, 0.002_695_407_3, 0.169_811_31, 1.0),
-            grazing_color: Vec4::new(0.0, 0.003_921_569, 0.168_627_4, 1.0),
-            shallow_color: Vec4::new(0.012, 0.13, 0.115, 7.0),
             // Water F0, Godot Fresnel power, shipped Crest specular strength, reserved.
             fresnel: Vec4::new(0.020_373_19, 5.0, 1.0, 0.0),
             // FFT flag, micro-roughness strength, daylight lux, maximum roughness.

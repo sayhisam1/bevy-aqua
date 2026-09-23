@@ -79,7 +79,7 @@ fn topside_reuses_the_underwater_medium_integral() {
         .next()
         .unwrap();
     assert!(surface.contains("return water_leaving_radiance("));
-    assert!(surface.contains("invocation_underwater_scatter_scale()"));
+    assert!(surface.contains("invocation_scatter_scale()"));
     assert!(surface.contains("invocation_scatter_tint()"));
     assert!(surface.contains("invocation_scattering_asymmetry()"));
     assert!(volume.contains("medium_radiance("));
@@ -110,7 +110,7 @@ fn underside_tir_uses_bounded_water_side_medium_not_air_probe() {
     assert!(underside.contains("let reflected = medium_radiance_oriented("));
     assert!(underside.contains("PATH_LENGTH_MAX"));
     assert!(underside.contains("-water_normal"));
-    assert!(underside.contains("invocation_underwater_scatter_scale()"));
+    assert!(underside.contains("invocation_scatter_scale()"));
     assert!(underside.contains("invocation_scatter_tint()"));
     assert!(underside.contains("invocation_scattering_asymmetry()"));
     let before_tir = underside

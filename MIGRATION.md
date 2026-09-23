@@ -67,6 +67,10 @@ Code that mirrors these cross-crate types must update both Rust and WGSL:
 - `SurfaceParams::medium_scatter: Vec4` is inserted after `sss_tint`; RGB stores
   `scatter_tint` and W stores `scattering_asymmetry`. Its encoded size changes
   from 304 to 320 bytes.
+- `SurfaceParams::deep_color`, `grazing_color`, and `shallow_color` are
+  removed. The encoded size changes from 320 to 272 bytes. Remove these
+  fields from `WaterOptics` literals as well; tune `extinction`,
+  `scatter_scale`, and `scatter_tint` instead.
 - `BodyParams::optics_b.w` stores bounded-body `scattering_asymmetry`.
 - `BodyParams::optics_c: Vec4` is appended; RGB stores bounded-body
   `scatter_tint` and W is reserved. The encoded `BodyParams` size therefore

@@ -8,7 +8,7 @@
     mesh_view_bindings::{globals, lights, view},
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
-#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, field_params, sample_field_level, invocation_extinction, invocation_underwater_scatter_scale, invocation_scatter_tint, invocation_scattering_asymmetry, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, uses_filtered_spectral_surface, get_spectral_filtered_variance, surface}
+#import aqua::cascade::{DEBUG_MODE_BEAUTY, DEBUG_MODE_BEER_LAMBERT, DEBUG_MODE_REFRACTION_VALIDITY, DEBUG_MODE_SEA_FLOOR, DEBUG_MODE_TRANSMISSION, DEBUG_MODE_UNREFRACTED, DEBUG_MODE_WATER_PATH, LUMINANCE_EPSILON, MIN_NORMAL_Y, capillary_resolved_weight, cascade_layout, godot_fresnel, field_params, sample_field_level, invocation_extinction, invocation_scatter_scale, invocation_scatter_tint, invocation_scattering_asymmetry, invocation_ripple, sample_planar_reflection, screen_xz_footprint, invocation_sun_roughness, uses_filtered_spectral_surface, get_spectral_filtered_variance, surface}
 #import aqua::waves::displace::{CAPILLARY_RESOLVED_ENERGY, WAVE_NORMALS_SLOPE_VARIANCE, capillary_normal_slope, detail_normal_sample}
 #import aqua::foam::shade::{sample_foam_density}
 #import aqua::shore::water::{blended_water_depth, caustic_bed_radiance}
@@ -94,8 +94,15 @@ fn unresolved_wave_roughness(
     return min(sqrt(max(slope_variance, 0.0)), surface.reflection.w);
 }
 
+// Bed depths in metres over which near transmission hands over to the far
+// tier. Below SHALLOW_WATER_DEPTH the bed is always shaded through the water;
+// at DEEP_WATER_DEPTH (Crest's shallow-colour depth) the far tier may take
+// over fully. Raising DEEP_WATER_DEPTH keeps costly near shading further out.
+const SHALLOW_WATER_DEPTH: f32 = 0.35;
+const DEEP_WATER_DEPTH: f32 = 7.0;
+
 fn deep_water_weight(water_depth: f32) -> f32 {
-    return smoothstep(0.35, surface.shallow_color.a, water_depth);
+    return smoothstep(SHALLOW_WATER_DEPTH, DEEP_WATER_DEPTH, water_depth);
 }
 
 fn surface_medium_radiance(scene: vec3<f32>, to_view: vec3<f32>, t_end: f32) -> vec3<f32> {
@@ -104,7 +111,7 @@ fn surface_medium_radiance(scene: vec3<f32>, to_view: vec3<f32>, t_end: f32) -> 
         to_view,
         t_end,
         invocation_extinction(),
-        invocation_underwater_scatter_scale(),
+        invocation_scatter_scale(),
         invocation_scatter_tint(),
         invocation_scattering_asymmetry(),
     );
@@ -828,7 +835,7 @@ fn shade_underside(
         PATH_LENGTH_MAX,
         0.0,
         invocation_extinction(),
-        invocation_underwater_scatter_scale(),
+        invocation_scatter_scale(),
         invocation_scatter_tint(),
         invocation_scattering_asymmetry(),
         facet_up,
@@ -851,7 +858,7 @@ fn shade_underside(
                 ssr.distance,
                 0.0,
                 invocation_extinction(),
-                invocation_underwater_scatter_scale(),
+                invocation_scatter_scale(),
                 invocation_scatter_tint(),
                 invocation_scattering_asymmetry(),
                 facet_up,

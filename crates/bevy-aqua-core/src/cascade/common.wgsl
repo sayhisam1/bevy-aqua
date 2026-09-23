@@ -96,9 +96,6 @@ struct PlanarReflectionSample {
 const PLANAR_PROJECTION_GUARD: f32 = 0.03;
 
 struct SurfaceParams {
-    deep_color: vec4<f32>,
-    grazing_color: vec4<f32>,
-    shallow_color: vec4<f32>,
     fresnel: vec4<f32>,
     reflection: vec4<f32>,
     sun: vec4<f32>,
@@ -107,7 +104,7 @@ struct SurfaceParams {
     fog_density: vec4<f32>,
     sea_floor: vec4<f32>,
     sss_tint: vec4<f32>,
-    /// Underwater particle scatter tint (rgb) and HG asymmetry (w).
+    /// Shared particle scatter tint (rgb) and HG asymmetry (w).
     medium_scatter: vec4<f32>,
     sss: vec4<f32>,
     detail: vec4<f32>,
@@ -133,7 +130,7 @@ struct BodyParams {
     aabb_size: vec4<f32>,
     /// rgb: per-channel Beer-Lambert extinction in 1/m; w: optics enable.
     optics_a: vec4<f32>,
-    /// x: scatter-endpoint scale; y: direct-light roughness; w: HG asymmetry.
+    /// x: particle scatter scale; y: direct-light roughness; w: HG asymmetry.
     optics_b: vec4<f32>,
     /// rgb: medium scatter tint; w reserved.
     optics_c: vec4<f32>,
@@ -309,12 +306,11 @@ var<private> invocation_river: f32 = 0.0;
 var<private> invocation_optics_a: vec4<f32> = vec4(0.0);
 var<private> invocation_optics_b: vec4<f32> = vec4(0.0);
 
-/// Per-body water optics: extinction replaces the ocean Beer-Lambert
-/// coefficients and the scatter endpoint scales down, so shallow fresh water
-/// reads clear over its bed instead of ocean-teal.
+/// Per-body medium coefficients, shared by surface and underside shading.
+/// A bounded body's optics replace the ocean's; low scatter keeps fresh
+/// water clear over its bed instead of ocean-teal.
 var<private> body_extinction: vec3<f32> = vec3(0.0);
 var<private> body_scatter_scale: f32 = 1.0;
-var<private> underwater_scatter_scale: f32 = 1.0;
 var<private> body_scatter_tint: vec3<f32> = vec3(1.0);
 var<private> body_scattering_asymmetry: f32 = 0.8;
 
@@ -362,18 +358,16 @@ fn set_fragment_river(sample: vec4<f32>) {
     fragment_river = sample;
 }
 
-/// Fragment entry: records the effective Beer-Lambert extinction and the
-/// scatter-endpoint scale after fresh-water optics override.
+/// Fragment entry: records the effective medium coefficients after a
+/// bounded body's optics override the ocean's.
 fn set_body_optics(
     extinction: vec3<f32>,
     scatter_scale: f32,
-    medium_scatter_scale: f32,
     scatter_tint: vec3<f32>,
     scattering_asymmetry: f32,
 ) {
     body_extinction = extinction;
     body_scatter_scale = scatter_scale;
-    underwater_scatter_scale = medium_scatter_scale;
     body_scatter_tint = scatter_tint;
     body_scattering_asymmetry = scattering_asymmetry;
 }
@@ -389,10 +383,6 @@ fn invocation_extinction() -> vec3<f32> {
 
 fn invocation_scatter_scale() -> f32 {
     return body_scatter_scale;
-}
-
-fn invocation_underwater_scatter_scale() -> f32 {
-    return underwater_scatter_scale;
 }
 
 fn invocation_scatter_tint() -> vec3<f32> {

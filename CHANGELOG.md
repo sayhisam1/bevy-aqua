@@ -19,8 +19,14 @@ All notable changes to this project are documented here. The format follows [Kee
   through every `AquaDebug` diagnostic mode.
 - Opt-in `AquaSettings::screen_space_reflections`. A depth-buffer hit replaces
   the topside cubemap or planar sample. With the `underwater` feature the same
-  switch marches the underside reflected ray. The setting defaults to off and 
+  switch marches the underside reflected ray. The setting defaults to off and
   needs a camera depth prepass.
+
+### Removed
+
+- `WaterOptics::deep_color`, `grazing_color`, and `shallow_color`, with their
+  `SurfaceParams` uniforms. Above-water body colour now comes from the same
+  medium integral as underwater shading, so these fields had no effect.
 
 ### Known limitations
 

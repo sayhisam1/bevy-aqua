@@ -50,7 +50,7 @@ mod far_scatter_tests {
             .unwrap();
         assert!(source.contains("fn surface_medium_radiance("));
         assert!(source.contains("water_leaving_radiance("));
-        assert!(source.contains("invocation_underwater_scatter_scale()"));
+        assert!(source.contains("invocation_scatter_scale()"));
         assert!(far.contains("surface_medium_radiance(vec3(0.0), to_view, t_end)"));
         assert!(far.contains("body += diffuse_irradiance * GODOT_WATER_ALBEDO;"));
         assert!(far.contains("body += lambertian * light_radiance * GODOT_WATER_ALBEDO;"));

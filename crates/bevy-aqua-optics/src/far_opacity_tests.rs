@@ -66,7 +66,7 @@ fn opacity_gate_uses_authored_extinction() {
     }
     assert!(
         function(OPTICS, "deep_water_weight")
-            .contains("smoothstep(0.35, surface.shallow_color.a, water_depth)")
+            .contains("smoothstep(SHALLOW_WATER_DEPTH, DEEP_WATER_DEPTH, water_depth)")
     );
     assert!(MATERIAL.contains("far_tier *= deep_water_weight(far_water_depth);"));
 }

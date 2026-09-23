@@ -100,20 +100,22 @@ pub struct AnimWavesStatus {
     pub written: bool,
 }
 
-/// Authored water optics for one body: Beer-Lambert extinction per channel,
-/// a scale on the volume-scatter endpoint, and the surface colours of an
-/// ocean optics preset. Localized bodies shade from `extinction`,
-/// `scatter_scale`, and `sun_roughness`; the global ocean preset
-/// ([`AquaSettings::water_optics`]) additionally reads the colour fields.
+/// Homogeneous water coefficients shared by the surface and underwater shading.
+///
+/// Body colour is not authored: it emerges from `extinction` and the particle
+/// scattering terms. Localized bodies read every field except `sss_tint`,
+/// which only the global ocean preset ([`AquaSettings::water_optics`]) uses.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct WaterOptics {
     /// Per-channel extinction in inverse metres. Clear mountain water:
     /// red dies a little faster than green/blue, giving brown-green pools.
     pub extinction: Vec3,
-    /// Multiplier on the volume-scatter endpoint. Small values keep the
-    /// deep-pool colour dark instead of ocean turquoise.
+    /// Particle scattering density; 1 is 0.02/m at 550 nm before `scatter_tint`.
+    ///
+    /// Also scales the sunlit crest subsurface lanes. Small values keep deep
+    /// pools dark instead of ocean turquoise. Range `0..=1` in the presets.
     pub scatter_scale: f32,
-    /// Per-channel particle-scatter chromaticity for the underwater medium.
+    /// Per-channel particle-scatter chromaticity for the shared water medium.
     pub scatter_tint: Vec3,
     /// Henyey-Greenstein asymmetry, clamped to a safe range by shaders.
     pub scattering_asymmetry: f32,
@@ -121,13 +123,6 @@ pub struct WaterOptics {
     /// Calm fresh water typically uses ~0.1 for sharper glints. Fresnel
     /// always uses the same dielectric response for every reflection source.
     pub sun_roughness: f32,
-    /// Deep-water body colour.
-    pub deep_color: Vec3,
-    /// Grazing-angle reflection tint.
-    pub grazing_color: Vec3,
-    /// Coastal scatter colour; alpha carries the metric depth at which it
-    /// reaches deep water.
-    pub shallow_color: Vec3,
     /// Sunlit subsurface scattering tint through pinched crests.
     pub sss_tint: Vec3,
 }
@@ -141,9 +136,6 @@ impl WaterOptics {
         scatter_tint: Vec3::ONE,
         scattering_asymmetry: 0.8,
         sun_roughness: -1.0,
-        deep_color: Vec3::new(0.0, 0.002_695_407_3, 0.169_811_31),
-        grazing_color: Vec3::new(0.0, 0.003_921_569, 0.168_627_4),
-        shallow_color: Vec3::new(0.012, 0.13, 0.115),
         sss_tint: Vec3::new(0.088_506_84, 0.497, 0.456_150_74),
     };
     /// Blue-green coastal profile; green survives longer than blue for a
@@ -154,9 +146,6 @@ impl WaterOptics {
         scatter_tint: Vec3::ONE,
         scattering_asymmetry: 0.8,
         sun_roughness: -1.0,
-        deep_color: Vec3::new(0.0, 0.018, 0.13),
-        grazing_color: Vec3::new(0.0, 0.025, 0.145),
-        shallow_color: Vec3::new(0.01, 0.16, 0.12),
         sss_tint: Vec3::new(0.06, 0.55, 0.45),
     };
     /// Green-leading tropical profile; blue decays much sooner than green
@@ -167,9 +156,6 @@ impl WaterOptics {
         scatter_tint: Vec3::ONE,
         scattering_asymmetry: 0.8,
         sun_roughness: -1.0,
-        deep_color: Vec3::new(0.0, 0.08, 0.06),
-        grazing_color: Vec3::new(0.0, 0.10, 0.075),
-        shallow_color: Vec3::new(0.015, 0.19, 0.10),
         sss_tint: Vec3::new(0.025, 0.62, 0.38),
     };
     /// Clear flowing fresh water over visible beds: transmission dominated
