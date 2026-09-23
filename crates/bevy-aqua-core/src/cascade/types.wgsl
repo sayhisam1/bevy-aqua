@@ -70,6 +70,9 @@ struct TransmissionState {
     body: vec3<f32>,
     output: vec4<f32>,
     handled: bool,
+    // Opacity of the viewed water column, 1 - exp(-extinction * path): the
+    // share of body radiance that comes from the volume, not the background.
+    column_opacity: vec3<f32>,
 }
 
 struct BodyLightingState {

@@ -192,9 +192,11 @@ fn far_field_water(
                 0.5 - 0.5 * dot(light_direction, lighting_normal),
                 3.0,
             );
+        // Far water is opaque, so its column opacity is one; only the
+        // particle scatter scale applies, as on the near path.
         body += (sss_height + sss_near)
             * GODOT_SSS_MODIFIER / (1.0 + sss_light_mask)
-            * light_radiance * GODOT_WATER_ALBEDO;
+            * light_radiance * GODOT_WATER_ALBEDO * invocation_scatter_scale();
         let sun_roughness = min(sqrt(
             invocation_sun_roughness() * invocation_sun_roughness()
                 + perceptual_roughness * perceptual_roughness,
@@ -497,6 +499,16 @@ fn illuminate_bed(
     );
 }
 
+fn column_opacity(water_path: f32) -> vec3<f32> {
+    return 1.0 - exp(-invocation_extinction() * water_path);
+}
+
+// No background: the view ray stays in the water until the medium saturates.
+fn open_transmission(to_view: vec3<f32>) -> TransmissionState {
+    let body = surface_medium_radiance(vec3(0.0), to_view, PATH_LENGTH_MAX);
+    return TransmissionState(body, vec4(0.0), false, vec3(1.0));
+}
+
 // Beauty skips color sampling when there is no usable background or the accepted
 // water path is opaque. Diagnostics deliberately bypass these shortcuts.
 fn beauty_transmission(
@@ -506,9 +518,9 @@ fn beauty_transmission(
     primary: PrimaryLightState,
     depth_path: CameraDepthPath,
     source_slot: u32,
-) -> vec3<f32> {
+) -> TransmissionState {
     if !(depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON) {
-        return surface_medium_radiance(vec3(0.0), to_view, PATH_LENGTH_MAX);
+        return open_transmission(to_view);
     }
 
     let depth_debug = camera_depth_debug_from_path(in, normal, depth_path);
@@ -521,8 +533,10 @@ fn beauty_transmission(
     let extinction = invocation_extinction();
     let minimum_extinction = min(extinction.r, min(extinction.g, extinction.b));
     // Refraction can reveal a shallower bed: test the accepted path, not the original.
+    let opacity = column_opacity(water_path);
     if !(minimum_extinction * water_path < TRANSMISSION_OPAQUE_OPTICAL_DEPTH) {
-        return surface_medium_radiance(vec3(0.0), to_view, water_path);
+        let body = surface_medium_radiance(vec3(0.0), to_view, water_path);
+        return TransmissionState(body, vec4(0.0), false, opacity);
     }
 
     let background_uv = select(
@@ -535,7 +549,8 @@ fn beauty_transmission(
         scene_colour, in, primary, depth_debug, use_refraction,
         background_uv, source_slot,
     );
-    return surface_medium_radiance(lit_scene, to_view, water_path);
+    let body = surface_medium_radiance(lit_scene, to_view, water_path);
+    return TransmissionState(body, vec4(0.0), false, opacity);
 }
 
 // Admission uses the same path selection and attenuation as near beauty.
@@ -570,9 +585,8 @@ fn resolve_transmission(
     source_slot: u32,
 ) -> TransmissionState {
     let is_diagnostic = mode >= DEBUG_MODE_WATER_PATH && mode <= DEBUG_MODE_SEA_FLOOR;
-    let open_body = surface_medium_radiance(vec3(0.0), to_view, PATH_LENGTH_MAX);
     if mode != DEBUG_MODE_BEAUTY && !is_diagnostic {
-        return TransmissionState(open_body, vec4(0.0), false);
+        return open_transmission(to_view);
     }
 
     // Foam may already have fetched this pixel's depth. Reuse it for either path.
@@ -581,18 +595,17 @@ fn resolve_transmission(
         shared_depth_path = camera_depth_path(in);
     }
     if mode == DEBUG_MODE_BEAUTY {
-        let body = beauty_transmission(
+        return beauty_transmission(
             in, normal, to_view, primary, shared_depth_path, source_slot,
         );
-        return TransmissionState(body, vec4(0.0), false);
     }
 
     // Diagnostic modes keep the full sampling path, even for opaque water.
-    var body = open_body;
+    var body = surface_medium_radiance(vec3(0.0), to_view, PATH_LENGTH_MAX);
     let depth_debug = camera_depth_debug_from_path(in, normal, shared_depth_path);
     if mode == DEBUG_MODE_WATER_PATH {
         let path = clamp(depth_debug.path_length / surface.debug.z, 0.0, 1.0);
-        return TransmissionState(body, vec4(vec3(path), 1.0), true);
+        return TransmissionState(body, vec4(vec3(path), 1.0), true, vec3(1.0));
     }
     if mode == DEBUG_MODE_REFRACTION_VALIDITY {
         let output = select(
@@ -600,7 +613,7 @@ fn resolve_transmission(
             vec4(0.0, 1.0, 0.0, 1.0),
             depth_debug.refracted_sample_valid,
         );
-        return TransmissionState(body, output, true);
+        return TransmissionState(body, output, true, vec3(1.0));
     }
     let refraction_enabled = mode == DEBUG_MODE_TRANSMISSION
         || mode == DEBUG_MODE_BEER_LAMBERT
@@ -614,7 +627,7 @@ fn resolve_transmission(
     );
     let scene_colour = opaque_background(background_uv);
     if mode == DEBUG_MODE_TRANSMISSION || mode == DEBUG_MODE_UNREFRACTED {
-        return TransmissionState(body, vec4(scene_colour, 1.0), true);
+        return TransmissionState(body, vec4(scene_colour, 1.0), true, vec3(1.0));
     }
 
     let lit_scene = illuminate_bed(
@@ -628,9 +641,9 @@ fn resolve_transmission(
     );
     body = surface_medium_radiance(lit_scene, to_view, water_path);
     if mode == DEBUG_MODE_BEER_LAMBERT {
-        return TransmissionState(body, vec4(body, 1.0), true);
+        return TransmissionState(body, vec4(body, 1.0), true, vec3(1.0));
     }
-    return TransmissionState(body, vec4(0.0), false);
+    return TransmissionState(body, vec4(0.0), false, column_opacity(water_path));
 }
 
 

@@ -121,7 +121,7 @@ fn no_background_and_zero_path_preserve_existing_contract() {
         beauty,
         &[
             "if !(depth_path.has_background && depth_path.path_length > LUMINANCE_EPSILON) {",
-            "return surface_medium_radiance(vec3(0.0), to_view, PATH_LENGTH_MAX);",
+            "return open_transmission(to_view);",
             "camera_depth_debug_from_path(",
             "opaque_background(",
         ],
